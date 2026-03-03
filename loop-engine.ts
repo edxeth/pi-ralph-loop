@@ -8,11 +8,14 @@ const MAX_ERROR_RETRIES = 3;
 /** Delay between iterations in milliseconds */
 const ITERATION_DELAY_MS = 500;
 
-/** How long to wait for session entries to appear after waitForIdle resolves */
-const EVENT_QUEUE_SETTLE_MS = 5000;
+/** How long to wait for a terminal assistant message after waitForIdle resolves */
+const EVENT_QUEUE_SETTLE_MS = 10000;
 
 /** Polling interval when waiting for session entries to settle */
 const EVENT_QUEUE_POLL_MS = 100;
+
+/** Stop reasons that indicate the agent loop has truly finished */
+const TERMINAL_STOP_REASONS = new Set(["stop", "length", "error", "aborted"]);
 
 /** Backoff delay before retrying after a provider error */
 const ERROR_RETRY_DELAY_MS = 2000;
@@ -91,9 +94,12 @@ function shouldStop(cancelledRef: BooleanRef, stoppedRef: BooleanRef): boolean {
 }
 
 /**
- * Check whether the session branch contains at least one assistant message.
+ * Get the stopReason of the last assistant message in the session branch.
+ * Returns null if no assistant messages exist.
  */
-function hasAssistantMessage(ctx: ExtensionCommandContext): boolean {
+function getLastAssistantStopReason(
+  ctx: ExtensionCommandContext,
+): string | null {
   const entries = ctx.sessionManager.getBranch();
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
@@ -102,35 +108,47 @@ function hasAssistantMessage(ctx: ExtensionCommandContext): boolean {
       "message" in entry &&
       (entry.message as { role: string }).role === "assistant"
     ) {
-      return true;
+      return (
+        (entry.message as { stopReason?: string }).stopReason ?? null
+      );
     }
   }
-  return false;
+  return null;
 }
 
 /**
- * Wait for session entries to be fully persisted after waitForIdle resolves.
+ * Wait for the agent's final state to be visible in the session manager.
  *
- * pi's agent events are processed via an async queue (_agentEventQueue).
- * When waitForIdle() resolves (runningPrompt fulfilled in _runLoop's finally
- * block), message_end events that call sessionManager.appendMessage() may
- * still be queued. This function polls getBranch() until at least one
- * assistant message appears, ensuring the event queue has drained before
- * the loop inspects session entries.
+ * After waitForIdle() resolves, the agent loop (_runLoop) has finished, but
+ * the async event queue (_agentEventQueue) may not have persisted the final
+ * assistant message yet. This function polls until the last assistant message
+ * has a terminal stopReason ("stop", "length", "error", "aborted").
+ *
+ * CRITICAL EDGE CASE: When the agent errors (e.g. API timeout), _runLoop's
+ * catch block creates an error message via agent.appendMessage() and emits
+ * agent_end — but it does NOT emit message_end. Since sessionManager only
+ * receives messages via _processAgentEvent(message_end), the error message
+ * is INVISIBLE to getBranch(). The last visible assistant message stays at
+ * stopReason="toolUse". After the timeout, we return false to signal that
+ * the iteration ended abnormally.
+ *
+ * @returns true if a terminal stopReason was observed, false if timed out
+ *          (indicates the agent errored but the error wasn't persisted)
  */
 async function waitForSessionSettle(
   ctx: ExtensionCommandContext,
   cancelledRef: BooleanRef,
   stoppedRef: BooleanRef,
-): Promise<void> {
+): Promise<boolean> {
   const deadline = Date.now() + EVENT_QUEUE_SETTLE_MS;
-  while (
-    !hasAssistantMessage(ctx) &&
-    !shouldStop(cancelledRef, stoppedRef) &&
-    Date.now() < deadline
-  ) {
+  while (!shouldStop(cancelledRef, stoppedRef) && Date.now() < deadline) {
+    const stopReason = getLastAssistantStopReason(ctx);
+    if (stopReason !== null && TERMINAL_STOP_REASONS.has(stopReason)) {
+      return true;
+    }
     await sleep(EVENT_QUEUE_POLL_MS);
   }
+  return false;
 }
 
 /**
@@ -140,7 +158,11 @@ async function waitForSessionSettle(
  * 1. Fire-and-forget sendUserMessage (pi triggers turn asynchronously)
  * 2. Spin-wait until the agent transitions out of idle (isStreaming = true)
  * 3. waitForIdle() until the agent loop finishes (runningPrompt resolves)
- * 4. Wait for the async event queue to drain so session entries are populated
+ * 4. Wait for the last assistant message to reach a terminal stopReason
+ *
+ * @returns true if the agent completed normally (terminal stopReason visible),
+ *          false if the agent errored but the error wasn't persisted to the
+ *          session manager (stopReason stuck at "toolUse" — see agent.ts catch block)
  */
 async function sendAndWaitForCompletion(
   pi: ExtensionAPI,
@@ -148,7 +170,7 @@ async function sendAndWaitForCompletion(
   message: string,
   cancelledRef: BooleanRef,
   stoppedRef: BooleanRef,
-): Promise<void> {
+): Promise<boolean> {
   pi.sendUserMessage(message);
 
   // Wait for the agent to actually start processing.
@@ -161,11 +183,11 @@ async function sendAndWaitForCompletion(
   // Wait for the agent loop to finish
   await ctx.waitForIdle();
 
-  // Wait for session entries to be persisted by the async event queue.
-  // Without this, getBranch() can return incomplete data because
-  // _processAgentEvent (which calls sessionManager.appendMessage) is
-  // chained on _agentEventQueue and may not have run yet.
-  await waitForSessionSettle(ctx, cancelledRef, stoppedRef);
+  // Wait for the final assistant message to appear with a terminal stopReason.
+  // If this returns false, the agent errored but the error message was never
+  // persisted to the session manager (pi's _runLoop catch block only calls
+  // agent.appendMessage, not sessionManager.appendMessage).
+  return waitForSessionSettle(ctx, cancelledRef, stoppedRef);
 }
 
 /**
@@ -245,8 +267,28 @@ export async function runLoop(
       last_session_file: sessionFile,
     });
 
-    // Send the task prompt and wait for full completion (including event queue drain)
-    await sendAndWaitForCompletion(pi, ctx, task, cancelledRef, stoppedRef);
+    // Send the task prompt and wait for full completion
+    const taskCompleted = await sendAndWaitForCompletion(
+      pi,
+      ctx,
+      task,
+      cancelledRef,
+      stoppedRef,
+    );
+
+    // If we timed out waiting for a terminal assistant stopReason, the agent
+    // likely errored after a tool call and the error was not persisted to the
+    // session manager (pi _runLoop catch path). Treat as provider error.
+    if (!taskCompleted) {
+      totalErrorCount++;
+      updateState(cwd, { error_count: totalErrorCount });
+      finalStopReason = "error";
+      ctx.ui.notify(
+        `Ralph loop failed at iteration ${iteration}: agent ended without terminal stopReason (stuck at toolUse)`,
+        "error",
+      );
+      break;
+    }
 
     // Check cancellation after idle
     if (shouldStop(cancelledRef, stoppedRef)) {
@@ -280,7 +322,21 @@ export async function runLoop(
       if (shouldStop(cancelledRef, stoppedRef)) break;
 
       // Send a "continue" nudge and wait for full completion
-      await sendAndWaitForCompletion(pi, ctx, "continue", cancelledRef, stoppedRef);
+      const retryCompleted = await sendAndWaitForCompletion(
+        pi,
+        ctx,
+        "continue",
+        cancelledRef,
+        stoppedRef,
+      );
+      if (!retryCompleted) {
+        finalStopReason = "error";
+        ctx.ui.notify(
+          `Ralph loop failed during retry at iteration ${iteration}: agent ended without terminal stopReason`,
+          "error",
+        );
+        break;
+      }
 
       if (shouldStop(cancelledRef, stoppedRef)) break;
 
