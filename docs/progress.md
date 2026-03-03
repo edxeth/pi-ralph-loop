@@ -80,6 +80,16 @@ This polls `ctx.isIdle()` in 100ms intervals until the agent transitions to non-
 
 User feedback: emojis in notifications were "childish". Stripped all emoji prefixes from notification messages and footer status. The notification `type` parameter (`"info"`, `"warning"`, `"error"`) already conveys severity.
 
+### Race condition: `waitForIdle()` resolving before event queue drains
+
+**Symptom:** Some loop iterations would end mid-work and spawn new iterations prematurely. The agent was still executing tool calls, but the loop moved to the next iteration, calling `ctx.newSession()` which aborted the in-flight work.
+
+**Root cause:** pi's agent events are processed via an async queue (`_agentEventQueue` in `agent-session.ts`). When `waitForIdle()` resolves (`runningPrompt` is fulfilled in `_runLoop`'s `finally` block at `agent.ts:547`), `message_end` events that call `sessionManager.appendMessage()` may still be queued on `_agentEventQueue` and unprocessed.
+
+This meant `ctx.sessionManager.getBranch()` could return incomplete entries immediately after `waitForIdle()`, causing `wasAborted()`, `hasError()`, and `containsCompletionPromise()` to all return `false` — so the loop proceeded to the next iteration.
+
+**Fix:** Added `waitForSessionSettle()` that polls `getBranch()` until at least one assistant message appears (with a 5s timeout), ensuring the event queue has drained before inspecting session state. Extracted the full send-wait-settle lifecycle into `sendAndWaitForCompletion()`, used by both the main task send and the error retry nudge.
+
 ## Testing Difficulties
 
 ### Print mode (`pi -p`) doesn't work for loop testing
