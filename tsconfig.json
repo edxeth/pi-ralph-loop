@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "paths": {
+      "@mariozechner/pi-coding-agent": ["/home/devkit/.bun/install/global/node_modules/@mariozechner/pi-coding-agent/dist/index.d.ts"],
+      "@mariozechner/pi-ai": ["/home/devkit/.bun/install/global/node_modules/@mariozechner/pi-ai/dist/index.d.ts"],
+      "@mariozechner/pi-tui": ["/home/devkit/.bun/install/global/node_modules/@mariozechner/pi-tui/dist/index.d.ts"],
+      "@sinclair/typebox": ["/home/devkit/.bun/install/global/node_modules/@sinclair/typebox/build/esm/index.d.mts"]
+    }
+  },
+  "include": ["*.ts"]
+}

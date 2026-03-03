@@ -1,0 +1,26 @@
+{
+  "name": "pi-ralph-loop",
+  "version": "1.0.0",
+  "description": "Ralph Wiggum loop extension for pi — iterative task execution with fresh context windows",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "ralph-loop",
+    "ralph-wiggum"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.3"
+  }
+}

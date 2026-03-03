@@ -1,0 +1,31 @@
+/** Stop reasons for the Ralph loop */
+export type StopReason =
+  | "complete" // <promise>COMPLETE</promise> detected
+  | "max_iterations" // Reached max_iterations limit
+  | "user_cancelled" // User pressed Ctrl+C / session_shutdown
+  | "error" // Unrecoverable provider error (after retries)
+  | "manual_stop"; // /ralph-stop command
+
+/** State persisted in .pi/ralph-loop.md frontmatter */
+export interface RalphLoopState {
+  running: boolean;
+  iteration: number;
+  max_iterations: number;
+  started_at: string;
+  completed_at: string | null;
+  stop_reason: StopReason | null;
+  session_id: string;
+  last_session_file: string | null;
+  error_count: number;
+}
+
+/** Parsed arguments from /ralph-loop command */
+export interface ParsedArgs {
+  task: string;
+  maxIterations: number;
+}
+
+/** Mutable boolean reference for cross-closure signaling */
+export interface BooleanRef {
+  value: boolean;
+}
