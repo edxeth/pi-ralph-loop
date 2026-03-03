@@ -8,6 +8,12 @@ const MAX_ERROR_RETRIES = 3;
 /** Delay between iterations in milliseconds */
 const ITERATION_DELAY_MS = 500;
 
+/** How long to wait for session entries to appear after waitForIdle resolves */
+const EVENT_QUEUE_SETTLE_MS = 5000;
+
+/** Polling interval when waiting for session entries to settle */
+const EVENT_QUEUE_POLL_MS = 100;
+
 /** Backoff delay before retrying after a provider error */
 const ERROR_RETRY_DELAY_MS = 2000;
 
@@ -82,6 +88,84 @@ function sleep(ms: number): Promise<void> {
  */
 function shouldStop(cancelledRef: BooleanRef, stoppedRef: BooleanRef): boolean {
   return cancelledRef.value || stoppedRef.value;
+}
+
+/**
+ * Check whether the session branch contains at least one assistant message.
+ */
+function hasAssistantMessage(ctx: ExtensionCommandContext): boolean {
+  const entries = ctx.sessionManager.getBranch();
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (
+      entry.type === "message" &&
+      "message" in entry &&
+      (entry.message as { role: string }).role === "assistant"
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Wait for session entries to be fully persisted after waitForIdle resolves.
+ *
+ * pi's agent events are processed via an async queue (_agentEventQueue).
+ * When waitForIdle() resolves (runningPrompt fulfilled in _runLoop's finally
+ * block), message_end events that call sessionManager.appendMessage() may
+ * still be queued. This function polls getBranch() until at least one
+ * assistant message appears, ensuring the event queue has drained before
+ * the loop inspects session entries.
+ */
+async function waitForSessionSettle(
+  ctx: ExtensionCommandContext,
+  cancelledRef: BooleanRef,
+  stoppedRef: BooleanRef,
+): Promise<void> {
+  const deadline = Date.now() + EVENT_QUEUE_SETTLE_MS;
+  while (
+    !hasAssistantMessage(ctx) &&
+    !shouldStop(cancelledRef, stoppedRef) &&
+    Date.now() < deadline
+  ) {
+    await sleep(EVENT_QUEUE_POLL_MS);
+  }
+}
+
+/**
+ * Send a user message and wait for the agent to fully complete.
+ *
+ * Handles the full lifecycle:
+ * 1. Fire-and-forget sendUserMessage (pi triggers turn asynchronously)
+ * 2. Spin-wait until the agent transitions out of idle (isStreaming = true)
+ * 3. waitForIdle() until the agent loop finishes (runningPrompt resolves)
+ * 4. Wait for the async event queue to drain so session entries are populated
+ */
+async function sendAndWaitForCompletion(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  message: string,
+  cancelledRef: BooleanRef,
+  stoppedRef: BooleanRef,
+): Promise<void> {
+  pi.sendUserMessage(message);
+
+  // Wait for the agent to actually start processing.
+  // sendUserMessage triggers a turn asynchronously; without this guard,
+  // waitForIdle() returns immediately because the agent hasn't begun yet.
+  while (ctx.isIdle() && !shouldStop(cancelledRef, stoppedRef)) {
+    await sleep(100);
+  }
+
+  // Wait for the agent loop to finish
+  await ctx.waitForIdle();
+
+  // Wait for session entries to be persisted by the async event queue.
+  // Without this, getBranch() can return incomplete data because
+  // _processAgentEvent (which calls sessionManager.appendMessage) is
+  // chained on _agentEventQueue and may not have run yet.
+  await waitForSessionSettle(ctx, cancelledRef, stoppedRef);
 }
 
 /**
@@ -161,18 +245,8 @@ export async function runLoop(
       last_session_file: sessionFile,
     });
 
-    // Send the task prompt
-    pi.sendUserMessage(task);
-
-    // Wait for the agent to actually start processing before waiting for idle.
-    // sendUserMessage triggers a turn asynchronously; without this guard,
-    // waitForIdle() returns immediately because the agent hasn't begun yet.
-    while (ctx.isIdle() && !shouldStop(cancelledRef, stoppedRef)) {
-      await sleep(100);
-    }
-
-    // Wait for the agent to finish
-    await ctx.waitForIdle();
+    // Send the task prompt and wait for full completion (including event queue drain)
+    await sendAndWaitForCompletion(pi, ctx, task, cancelledRef, stoppedRef);
 
     // Check cancellation after idle
     if (shouldStop(cancelledRef, stoppedRef)) {
@@ -205,12 +279,8 @@ export async function runLoop(
 
       if (shouldStop(cancelledRef, stoppedRef)) break;
 
-      // Send a "continue" nudge
-      pi.sendUserMessage("continue");
-      while (ctx.isIdle() && !shouldStop(cancelledRef, stoppedRef)) {
-        await sleep(100);
-      }
-      await ctx.waitForIdle();
+      // Send a "continue" nudge and wait for full completion
+      await sendAndWaitForCompletion(pi, ctx, "continue", cancelledRef, stoppedRef);
 
       if (shouldStop(cancelledRef, stoppedRef)) break;
 
