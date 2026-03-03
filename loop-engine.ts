@@ -5,8 +5,18 @@ import { readState, updateState, writeState } from "./state.js";
 /** Maximum retry attempts per iteration for provider errors */
 const MAX_ERROR_RETRIES = 3;
 
-/** Maximum nudges per iteration when assistant doesn't emit a control promise */
+/** Maximum non-promise turns per iteration before failing */
 const MAX_PROMISE_NUDGES = 5;
+
+/** Final warning nudge sent on the last allowed attempt before nudge limit is hit */
+const FINAL_PROMISE_WARNING_NUDGE = [
+  "continue",
+  "Reminder: emit exactly one control tag on the LAST non-empty line when appropriate:",
+  "- <promise>NEXT</promise> only when this iteration unit is fully done",
+  "- <promise>COMPLETE</promise> only when ALL tasks are fully done",
+  "- <promise>STOP</promise> if blocked and cannot continue without user action",
+  "If none applies yet, keep working and do not emit a promise tag.",
+].join("\n");
 
 /** Delay between iterations in milliseconds */
 const ITERATION_DELAY_MS = 500;
@@ -367,22 +377,27 @@ export async function runLoop(
         break;
       }
 
-      // No control promise => keep same iteration and nudge with "continue".
+      // No control promise => keep same iteration and nudge.
+      // Semantics: when promiseNudges reaches MAX_PROMISE_NUDGES, stop.
+      // So the final nudge opportunity is MAX_PROMISE_NUDGES - 1.
       promiseNudges++;
-      if (promiseNudges > MAX_PROMISE_NUDGES) {
+      if (promiseNudges >= MAX_PROMISE_NUDGES) {
         finalStopReason = "error";
         ctx.ui.notify(
-          `Ralph loop failed at iteration ${iteration}: assistant did not emit <promise>NEXT</promise>, <promise>COMPLETE</promise>, or <promise>STOP</promise> after ${MAX_PROMISE_NUDGES} nudges`,
+          `Ralph loop failed at iteration ${iteration}: assistant did not emit <promise>NEXT</promise>, <promise>COMPLETE</promise>, or <promise>STOP</promise> within ${MAX_PROMISE_NUDGES - 1} nudges`,
           "error",
         );
         break;
       }
 
+      const isFinalWarningNudge = promiseNudges === MAX_PROMISE_NUDGES - 1;
       ctx.ui.notify(
-        `Iteration ${iteration}/${maxIterations} missing control promise; nudging continue (${promiseNudges}/${MAX_PROMISE_NUDGES})`,
+        isFinalWarningNudge
+          ? `Iteration ${iteration}/${maxIterations} still missing control promise; sending final warning nudge (${promiseNudges}/${MAX_PROMISE_NUDGES - 1})`
+          : `Iteration ${iteration}/${maxIterations} missing control promise; nudging continue (${promiseNudges}/${MAX_PROMISE_NUDGES - 1})`,
         "warning",
       );
-      nextMessage = "continue";
+      nextMessage = isFinalWarningNudge ? FINAL_PROMISE_WARNING_NUDGE : "continue";
     }
 
     // Update cumulative error count
