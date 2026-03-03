@@ -80,15 +80,20 @@ This polls `ctx.isIdle()` in 100ms intervals until the agent transitions to non-
 
 User feedback: emojis in notifications were "childish". Stripped all emoji prefixes from notification messages and footer status. The notification `type` parameter (`"info"`, `"warning"`, `"error"`) already conveys severity.
 
-### Race condition: `waitForIdle()` resolving before event queue drains
+### Race condition: non-terminal assistant state treated as completed iteration
 
-**Symptom:** Some loop iterations would end mid-work and spawn new iterations prematurely. The agent was still executing tool calls, but the loop moved to the next iteration, calling `ctx.newSession()` which aborted the in-flight work.
+**Symptom:** Some loop iterations ended mid-work and the loop started the next iteration. Session logs showed the last assistant message with `stopReason: "toolUse"` followed by a tool result, but no final assistant message (`stop`/`error`/`aborted`).
 
-**Root cause:** pi's agent events are processed via an async queue (`_agentEventQueue` in `agent-session.ts`). When `waitForIdle()` resolves (`runningPrompt` is fulfilled in `_runLoop`'s `finally` block at `agent.ts:547`), `message_end` events that call `sessionManager.appendMessage()` may still be queued on `_agentEventQueue` and unprocessed.
+**Root cause:** The earlier fix only waited until *any* assistant message appeared after `waitForIdle()`. That was too weak. In failure cases after a tool call, the last persisted assistant message can remain non-terminal (`toolUse`), and the loop incorrectly advanced.
 
-This meant `ctx.sessionManager.getBranch()` could return incomplete entries immediately after `waitForIdle()`, causing `wasAborted()`, `hasError()`, and `containsCompletionPromise()` to all return `false` — so the loop proceeded to the next iteration.
+**Fix (final):**
+- Added `getLastAssistantStopReason()`.
+- `waitForSessionSettle()` now waits for a **terminal** assistant stopReason: `stop`, `length`, `error`, or `aborted`.
+- Increased settle timeout to 10s.
+- `sendAndWaitForCompletion()` now returns `boolean`.
+- If settle times out (stopReason stuck at `toolUse`), the loop marks the iteration as `error` and stops instead of advancing.
 
-**Fix:** Added `waitForSessionSettle()` that polls `getBranch()` until at least one assistant message appears (with a 5s timeout), ensuring the event queue has drained before inspecting session state. Extracted the full send-wait-settle lifecycle into `sendAndWaitForCompletion()`, used by both the main task send and the error retry nudge.
+This prevents premature session switching and ensures one iteration only advances when the previous one has terminally completed.
 
 ## Testing Difficulties
 
