@@ -14,8 +14,6 @@ const FINAL_PROMISE_WARNING_NUDGE = [
   "Reminder: emit exactly one control tag on the LAST non-empty line when appropriate:",
   "- <promise>NEXT</promise> only when this iteration unit is fully done",
   "- <promise>COMPLETE</promise> only when ALL tasks are fully done",
-  "- <promise>STOP</promise> if blocked and cannot continue without user action",
-  "If none applies yet, keep working and do not emit a promise tag.",
 ].join("\n");
 
 /** Delay between iterations in milliseconds */
