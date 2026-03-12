@@ -21,6 +21,10 @@
     ]
   },
   "devDependencies": {
+    "@mariozechner/pi-ai": "^0.57.1",
+    "@mariozechner/pi-coding-agent": "^0.57.1",
+    "@mariozechner/pi-tui": "^0.57.1",
+    "@sinclair/typebox": "^0.34.48",
     "@types/node": "^25.3.3"
   }
 }
