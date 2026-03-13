@@ -23,6 +23,19 @@ Start a Ralph loop. The task is sent as a user message at the start of each fres
 
 Default max iterations: 100.
 
+### `/ralph-resume [--force]`
+
+Resume a saved loop from `.ralph/loop.md`.
+
+- For failed, cancelled, stopped, or max-iteration runs, `/ralph-resume` works normally.
+- For completed runs, use `/ralph-resume --force`.
+- If you run it from the same session recorded in `session_id`, Ralph resumes that iteration in the current chat by sending `continue`.
+- If you run it from any other session, Ralph restarts the saved iteration in a fresh session using the original task body from `.ralph/loop.md`.
+
+### `/ralph-restart`
+
+Restart the saved loop from iteration 1 in a fresh session, reusing the prompt and `max_iterations` from `.ralph/loop.md` and resetting the other frontmatter fields for a new run.
+
 ### `/ralph-stop`
 
 Stop the loop after the current iteration finishes.
@@ -31,9 +44,15 @@ Stop the loop after the current iteration finishes.
 
 Show the current loop status (iteration, elapsed time, errors).
 
+## Active Loop Safety
+
+While a loop is running, the extension blocks `/resume`, `/new`, `/fork`, and `/tree` in that pi instance. These commands mutate the active session or branch and can interrupt the loop.
+
+If you want to inspect previous iterations while Ralph keeps running, open a second `pi` instance and browse sessions there.
+
 ## State File
 
-Loop state is persisted in `.pi/ralph-loop.md` with YAML frontmatter:
+Loop state is persisted in `.ralph/loop.md` with YAML frontmatter:
 
 ```yaml
 ---

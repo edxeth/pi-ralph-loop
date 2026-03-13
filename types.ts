@@ -6,7 +6,7 @@ export type StopReason =
   | "error" // Unrecoverable provider error (after retries)
   | "manual_stop"; // /ralph-stop command
 
-/** State persisted in .pi/ralph-loop.md frontmatter */
+/** State persisted in .ralph/loop.md frontmatter */
 export interface RalphLoopState {
   running: boolean;
   iteration: number;
@@ -28,4 +28,13 @@ export interface ParsedArgs {
 /** Mutable boolean reference for cross-closure signaling */
 export interface BooleanRef {
   value: boolean;
+}
+
+/** Options for starting or resuming a Ralph loop run */
+export interface RunLoopOptions {
+  startIteration?: number;
+  startedAt?: string;
+  initialErrorCount?: number;
+  reuseCurrentSession?: boolean;
+  initialMessage?: string;
 }

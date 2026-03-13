@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import type { BooleanRef, RalphLoopState } from "./types.js";
+import type { BooleanRef, RalphLoopState, RunLoopOptions } from "./types.js";
 import { readState, updateState, writeState } from "./state.js";
 
 /** Maximum retry attempts per iteration for provider errors */
@@ -216,6 +216,9 @@ async function sendAndWaitForCompletion(
  * @param maxIterations - Maximum number of iterations
  * @param cancelledRef - Mutable ref set by session_shutdown handler
  * @param stoppedRef - Mutable ref set by /ralph-stop command
+ * @param internalNewSessionRef - Mutable ref that temporarily allows the
+ * loop's own ctx.newSession() call through the session_before_switch guard
+ * @param options - Optional resume/start controls
  */
 export async function runLoop(
   pi: ExtensionAPI,
@@ -224,30 +227,36 @@ export async function runLoop(
   maxIterations: number,
   cancelledRef: BooleanRef,
   stoppedRef: BooleanRef,
+  internalNewSessionRef: BooleanRef,
+  options: RunLoopOptions = {},
 ): Promise<void> {
   const cwd = ctx.cwd;
-  const startedAt = new Date().toISOString();
+  const startIteration = options.startIteration ?? 1;
+  const startedAt = options.startedAt ?? new Date().toISOString();
+  const initialErrorCount = options.initialErrorCount ?? 0;
+  const reuseCurrentSession = options.reuseCurrentSession === true;
+  const resumedInitialMessage = options.initialMessage ?? task;
 
   // Write initial state
   const initialState: RalphLoopState = {
     running: true,
-    iteration: 1,
+    iteration: startIteration,
     max_iterations: maxIterations,
     started_at: startedAt,
     completed_at: null,
     stop_reason: null,
     session_id: "",
     last_session_file: null,
-    error_count: 0,
+    error_count: initialErrorCount,
   };
   writeState(cwd, initialState, task);
 
   ctx.ui.notify(`Ralph loop started (max ${maxIterations} iterations)`, "info");
 
   let finalStopReason: RalphLoopState["stop_reason"] = null;
-  let totalErrorCount = 0;
+  let totalErrorCount = initialErrorCount;
 
-  for (let iteration = 1; iteration <= maxIterations; iteration++) {
+  for (let iteration = startIteration; iteration <= maxIterations; iteration++) {
     // Check cancellation before starting iteration
     if (shouldStop(cancelledRef, stoppedRef)) {
       finalStopReason = cancelledRef.value ? "user_cancelled" : "manual_stop";
@@ -266,11 +275,26 @@ export async function runLoop(
 
     ctx.ui.notify(`Ralph iteration ${iteration}/${maxIterations}`, "info");
 
-    // Create a fresh session (new context window!)
-    const newSessionResult = await ctx.newSession();
-    if (newSessionResult.cancelled) {
-      finalStopReason = "user_cancelled";
-      break;
+    const shouldReuseCurrentSession = reuseCurrentSession && iteration === startIteration;
+
+    if (shouldReuseCurrentSession) {
+      ctx.ui.notify(
+        `Resuming Ralph loop in current session at iteration ${iteration}/${maxIterations}`,
+        "info",
+      );
+    } else {
+      // Create a fresh session (new context window!)
+      let newSessionResult: { cancelled: boolean };
+      internalNewSessionRef.value = true;
+      try {
+        newSessionResult = await ctx.newSession();
+      } finally {
+        internalNewSessionRef.value = false;
+      }
+      if (newSessionResult.cancelled) {
+        finalStopReason = "user_cancelled";
+        break;
+      }
     }
 
     // Name the session
@@ -287,7 +311,7 @@ export async function runLoop(
     // Drive this iteration until assistant emits a control promise.
     let providerRetries = 0;
     let promiseNudges = 0;
-    let nextMessage = task;
+    let nextMessage = shouldReuseCurrentSession ? resumedInitialMessage : task;
     let shouldAdvanceIteration = false;
 
     while (!shouldStop(cancelledRef, stoppedRef)) {

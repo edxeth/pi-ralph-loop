@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { RalphLoopState } from "./types.js";
 
 /** Relative path to the state file from project root */
-const STATE_FILE = join(".pi", "ralph-loop.md");
+const STATE_FILE = join(".ralph", "loop.md");
 
 /**
  * Serialize a frontmatter value to its YAML representation.
@@ -99,7 +99,7 @@ export function writeState(
   state: RalphLoopState,
   taskBody: string,
 ): void {
-  const dirPath = join(cwd, ".pi");
+  const dirPath = join(cwd, ".ralph");
   if (!existsSync(dirPath)) {
     mkdirSync(dirPath, { recursive: true });
   }
