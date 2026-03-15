@@ -178,8 +178,10 @@ async function waitForSessionSettle(
  * 4. Wait for the last assistant message to reach a terminal stopReason
  *
  * @returns true if the agent completed normally (terminal stopReason visible),
- *          false if the agent errored but the error wasn't persisted to the
- *          session manager (stopReason stuck at "toolUse" — see agent.ts catch block)
+ *          false if the agent likely errored after a tool call but the error
+ *          wasn't persisted to the session manager (stopReason stuck at
+ *          "toolUse" — see agent.ts catch block). Callers should treat this
+ *          as a retryable provider failure.
  */
 async function sendAndWaitForCompletion(
   pi: ExtensionAPI,
@@ -325,15 +327,28 @@ export async function runLoop(
 
       // If we timed out waiting for a terminal assistant stopReason, the agent
       // likely errored after a tool call and the error was not persisted to the
-      // session manager (pi _runLoop catch path). Treat as provider error.
+      // session manager (pi _runLoop catch path). Treat as a retryable provider
+      // failure and send a plain "continue" nudge.
       if (!turnCompleted) {
+        providerRetries++;
         totalErrorCount++;
-        finalStopReason = "error";
+
+        if (providerRetries > MAX_ERROR_RETRIES) {
+          finalStopReason = "error";
+          ctx.ui.notify(
+            `Ralph loop failed after ${iteration} iterations: agent kept ending without a terminal stopReason after ${MAX_ERROR_RETRIES} retries`,
+            "error",
+          );
+          break;
+        }
+
         ctx.ui.notify(
-          `Ralph loop failed at iteration ${iteration}: agent ended without terminal stopReason (stuck at toolUse)`,
-          "error",
+          `Agent ended without terminal stopReason (likely transient provider failure after tool use); retrying with continue (${providerRetries}/${MAX_ERROR_RETRIES})...`,
+          "warning",
         );
-        break;
+        await sleep(ERROR_RETRY_DELAY_MS);
+        nextMessage = "continue";
+        continue;
       }
 
       // Check cancellation after each completed turn.

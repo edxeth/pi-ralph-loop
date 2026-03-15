@@ -98,6 +98,7 @@ Or add to `~/.pi/agent/settings.json`:
 ## Error Handling
 
 - **Provider errors**: Retried up to 3 times with a "continue" nudge
+- **Missing terminal stopReason after tool use**: Treated as a retryable provider failure and retried up to the same 3-attempt budget with `continue`
 - **User abort (Ctrl+C)**: Loop stops, does not start new iteration
 - **Session shutdown (Ctrl+C×2)**: Loop stops immediately
 - **Stale state**: Detected on startup and reset automatically
