@@ -7,8 +7,8 @@ import { join, resolve } from "node:path";
 import readline from "node:readline";
 
 const SHOULD_RUN = process.env.PI_RALPH_LIVE === "1";
-const MODEL = "ccs-openai-alt/gpt-5.4-mini";
-const THINKING = "medium";
+const MODEL = process.env.PI_RALPH_TEST_MODEL ?? "ccs-openai-alt/gpt-5.4-mini";
+const THINKING = process.env.PI_RALPH_TEST_THINKING ?? "medium";
 
 type RpcHarness = {
   sendPrompt: (message: string) => void;

@@ -2,20 +2,18 @@
 
 Use this when changing the Ralph loop runtime, session-transition behavior, or anything touching command/event wiring.
 
-## Required model
+## Model selection
 
-Always use:
+Contributors do **not** need to use one fixed model.
 
-- model: `ccs-openai-alt/gpt-5.4-mini`
-- thinking: `medium`
-
-This is the project standard for live pi validation.
+Use any working model you have access to.
+If a maintainer asks for a specific model for a validation pass, follow that request for that pass only.
 
 ## Prerequisites
 
 - `gh`/repo access is not required for the tests themselves
 - pi must be installed and usable from this machine
-- the account/environment must have access to `ccs-openai-alt/gpt-5.4-mini`
+- you must have access to whichever pi model you choose for the live run
 
 ## Main commands
 
@@ -31,10 +29,20 @@ Run live pi integration tests:
 npm run test:live
 ```
 
-The live test suite already pins:
+Override the live-test model if needed:
 
-- `--model ccs-openai-alt/gpt-5.4-mini`
-- `--thinking medium`
+```bash
+PI_RALPH_TEST_MODEL="your-provider/your-model" \
+PI_RALPH_TEST_THINKING="medium" \
+npm run test:live
+```
+
+The live suite accepts:
+
+- `PI_RALPH_TEST_MODEL`
+- `PI_RALPH_TEST_THINKING`
+
+If those are unset, the test file falls back to its current local defaults.
 
 ## What the live suite verifies
 
