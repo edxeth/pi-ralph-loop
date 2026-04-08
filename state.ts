@@ -81,6 +81,11 @@ export function readState(cwd: string): RalphLoopState | null {
           : null,
       error_count:
         typeof data.error_count === "number" ? data.error_count : 0,
+      transitioning: data.transitioning === true,
+      cancel_requested: data.cancel_requested === true,
+      stop_requested: data.stop_requested === true,
+      next_message:
+        typeof data.next_message === "string" ? data.next_message : "",
     };
   } catch {
     return null;
@@ -115,6 +120,10 @@ export function writeState(
     `session_id: ${serializeValue(state.session_id)}`,
     `last_session_file: ${serializeValue(state.last_session_file)}`,
     `error_count: ${serializeValue(state.error_count)}`,
+    `transitioning: ${serializeValue(state.transitioning)}`,
+    `cancel_requested: ${serializeValue(state.cancel_requested)}`,
+    `stop_requested: ${serializeValue(state.stop_requested)}`,
+    `next_message: ${serializeValue(state.next_message)}`,
     "---",
   ].join("\n");
 

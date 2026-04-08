@@ -17,17 +17,16 @@ export interface RalphLoopState {
   session_id: string;
   last_session_file: string | null;
   error_count: number;
+  transitioning: boolean;
+  cancel_requested: boolean;
+  stop_requested: boolean;
+  next_message: string;
 }
 
 /** Parsed arguments from /ralph-loop command */
 export interface ParsedArgs {
   task: string;
   maxIterations: number;
-}
-
-/** Mutable boolean reference for cross-closure signaling */
-export interface BooleanRef {
-  value: boolean;
 }
 
 /** Options for starting or resuming a Ralph loop run */

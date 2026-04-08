@@ -65,10 +65,18 @@ stop_reason: null
 session_id: "abc123"
 last_session_file: "~/.pi/agent/sessions/..."
 error_count: 0
+transitioning: false
+cancel_requested: false
+stop_requested: false
+next_message: "continue"
 ---
 
 <your task prompt here>
 ```
+
+## Documentation
+
+- [Live end-to-end testing with pi](docs/live-e2e-testing.md)
 
 ## Installation
 
@@ -87,13 +95,26 @@ Or add to `~/.pi/agent/settings.json`:
 ## How It Works
 
 1. User runs `/ralph-loop "task" --max-iterations=N`
-2. Extension creates a fresh session via `ctx.newSession()`
-3. Names it `Ralph loop iteration 1/N`
-4. Sends the task via `pi.sendUserMessage(task)`
-5. Waits for completion via `ctx.waitForIdle()`
-6. Checks for `<promise>COMPLETE</promise>` in assistant messages
-7. If not found, loops back to step 2 with iteration 2, 3, ...
-8. Stops on completion, max iterations, user cancel, or persistent errors
+2. Ralph persists loop state to `.ralph/loop.md`
+3. Ralph creates a fresh session via `ctx.newSession()`
+4. On the new session start, Ralph queues an internal continuation command
+5. The continuation names the session `Ralph loop iteration N/M`
+6. The task is sent via `pi.sendUserMessage(...)`
+7. Ralph waits for completion and reads the assistant control tag
+8. `<promise>NEXT</promise>` advances to the next fresh session
+9. `<promise>COMPLETE</promise>` stops successfully
+10. The loop also stops on max iterations, user cancel, or persistent errors
+
+## Testing
+
+```bash
+npm test
+npm run test:live
+```
+
+- `npm test` covers parser, state persistence, command/event wiring, and loop orchestration.
+- `npm run test:live` runs live RPC integration tests against pi.
+- See [docs/live-e2e-testing.md](docs/live-e2e-testing.md) for the contributor workflow and manual smoke test.
 
 ## Error Handling
 
@@ -101,4 +122,5 @@ Or add to `~/.pi/agent/settings.json`:
 - **Missing terminal stopReason after tool use**: Treated as a retryable provider failure and retried up to the same 3-attempt budget with `continue`
 - **User abort (Ctrl+C)**: Loop stops, does not start new iteration
 - **Session shutdown (Ctrl+C×2)**: Loop stops immediately
+- **Session transitions**: Loop state survives Ralph's internal `/new` session hops safely
 - **Stale state**: Detected on startup and reset automatically
