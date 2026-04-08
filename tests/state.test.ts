@@ -16,7 +16,7 @@ function makeState(): RalphLoopState {
     completed_at: null,
     stop_reason: null,
     session_id: "session-1",
-    last_session_file: "/tmp/session-1.jsonl",
+    last_session_file: "/sessions/session-1.jsonl",
     error_count: 1,
     transitioning: false,
     cancel_requested: false,

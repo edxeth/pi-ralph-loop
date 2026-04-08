@@ -45,7 +45,7 @@ function makeBaseState(overrides: Partial<RalphLoopState> = {}): RalphLoopState 
     completed_at: null,
     stop_reason: null,
     session_id: "session-1",
-    last_session_file: "/tmp/session-1.jsonl",
+    last_session_file: "/sessions/session-1.jsonl",
     error_count: 0,
     transitioning: true,
     cancel_requested: false,
@@ -63,7 +63,7 @@ function createHarness(responses: ScriptedResponse[]): Harness {
   const statusUpdates: Array<{ key: string; value: string | undefined }> = [];
   const sessionNames: string[] = [];
   let sessionId = "session-1";
-  let sessionFile = "/tmp/session-1.jsonl";
+  let sessionFile = "/sessions/session-1.jsonl";
   let newSessionCalls = 0;
 
   const pi = {
@@ -146,7 +146,7 @@ test("runLoop initializes state and starts a fresh-session transition", async ()
 test("continueLoop advances iteration when assistant emits NEXT", async () => {
   const h = createHarness([{ text: "Iteration 1\n<promise>NEXT</promise>" }]);
   h.writeState(makeBaseState({ iteration: 1, max_iterations: 3, next_message: "task" }));
-  h.setSession("session-2", "/tmp/session-2.jsonl");
+  h.setSession("session-2", "/sessions/session-2.jsonl");
 
   await continueLoop(h.pi, h.ctx);
 
@@ -157,7 +157,7 @@ test("continueLoop advances iteration when assistant emits NEXT", async () => {
       iteration: 2,
       max_iterations: 3,
       session_id: "session-2",
-      last_session_file: "/tmp/session-2.jsonl",
+      last_session_file: "/sessions/session-2.jsonl",
       transitioning: true,
       next_message: "task",
     }),
@@ -168,7 +168,7 @@ test("continueLoop advances iteration when assistant emits NEXT", async () => {
 test("continueLoop completes when assistant emits COMPLETE", async () => {
   const h = createHarness([{ text: "Iteration 2\n<promise>COMPLETE</promise>" }]);
   h.writeState(makeBaseState({ iteration: 2, max_iterations: 3, next_message: "task" }));
-  h.setSession("session-3", "/tmp/session-3.jsonl");
+  h.setSession("session-3", "/sessions/session-3.jsonl");
 
   await continueLoop(h.pi, h.ctx);
 

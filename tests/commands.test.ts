@@ -23,7 +23,7 @@ function makeCommandsState(overrides: Partial<RalphLoopState> = {}): RalphLoopSt
     completed_at: null,
     stop_reason: null,
     session_id: "session-1",
-    last_session_file: "/tmp/session-1.jsonl",
+    last_session_file: "/sessions/session-1.jsonl",
     error_count: 0,
     transitioning: false,
     cancel_requested: false,
