@@ -20,7 +20,6 @@ export interface RalphLoopState {
   transitioning: boolean;
   cancel_requested: boolean;
   stop_requested: boolean;
-  next_message: string;
 }
 
 /** Parsed arguments from /ralph-loop command */
@@ -35,5 +34,4 @@ export interface RunLoopOptions {
   startedAt?: string;
   initialErrorCount?: number;
   reuseCurrentSession?: boolean;
-  initialMessage?: string;
 }

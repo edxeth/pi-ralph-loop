@@ -26,7 +26,6 @@ function makeEventsState(overrides: Partial<RalphLoopState> = {}): RalphLoopStat
     transitioning: false,
     cancel_requested: false,
     stop_requested: false,
-    next_message: "task",
   };
   return { ...baseState, ...overrides };
 }
@@ -37,6 +36,7 @@ function createEventsHarness() {
   const notifications: Array<{ message: string; type: string }> = [];
   const sentMessages: string[] = [];
   const statusUpdates: Array<{ key: string; value: string | undefined }> = [];
+  const sessionNames: string[] = [];
 
   const pi = {
     on(name: string, handler: EventHandler) {
@@ -44,6 +44,9 @@ function createEventsHarness() {
     },
     sendUserMessage(message: string) {
       sentMessages.push(message);
+    },
+    setSessionName(name: string) {
+      sessionNames.push(name);
     },
   } as unknown as ExtensionAPI;
 
@@ -60,9 +63,13 @@ function createEventsHarness() {
         statusUpdates.push({ key, value });
       },
     },
+    sessionManager: {
+      getSessionId: () => "session-2",
+      getSessionFile: () => "/sessions/session-2.jsonl",
+    },
   } as unknown as ExtensionContext;
 
-  return { cwd, handlers, notifications, sentMessages, statusUpdates, ctx };
+  return { cwd, handlers, notifications, sentMessages, statusUpdates, sessionNames, ctx };
 }
 
 test("session_before_switch blocks resume while loop is running", async () => {
@@ -90,11 +97,26 @@ test("session_shutdown marks cancellation request", () => {
   assert.equal(readState(h.cwd)?.cancel_requested, true);
 });
 
-test("session_start queues continuation for Ralph-created new sessions", () => {
+test("session_start sends task text for Ralph-created new sessions", () => {
   const h = createEventsHarness();
-  writeState(h.cwd, makeEventsState({ transitioning: true }), "task");
+  writeState(h.cwd, makeEventsState({ transitioning: true }), "my task prompt");
 
   h.handlers.get("session_start")!({ reason: "new" }, h.ctx);
 
-  assert.deepEqual(h.sentMessages, ["/ralph-continue"]);
+  // Should send the task text directly.
+  assert.deepEqual(h.sentMessages, ["my task prompt"]);
+  // Should set the session name.
+  assert.ok(h.sessionNames.some((n) => n.includes("2/5")));
+  // Should restore status.
+  assert.ok(h.statusUpdates.some((u) => u.key === "ralph-loop" && u.value !== undefined));
+});
+
+test("session_start does nothing for non-transitioning sessions", () => {
+  const h = createEventsHarness();
+  writeState(h.cwd, makeEventsState({ transitioning: false }), "task");
+
+  h.handlers.get("session_start")!({ reason: "new" }, h.ctx);
+
+  // Should not send any messages.
+  assert.deepEqual(h.sentMessages, []);
 });

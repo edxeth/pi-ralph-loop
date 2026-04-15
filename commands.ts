@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 
-import { continueLoop, runLoop } from "./loop-engine.js";
+import { runLoop } from "./loop-engine.js";
 import { parseArgs } from "./parser.js";
 import { getTaskBody, readState, updateState } from "./state.js";
 
@@ -69,21 +69,7 @@ function formatStatusMessage(state: SavedLoop["state"]): string {
     `   Errors: ${state.error_count}`,
     `   Session: ${state.session_id || "unknown"}`,
     `   Transitioning: ${state.transitioning ? "yes" : "no"}`,
-    `   Next message: ${state.next_message || "(none)"}`,
   ].join("\n");
-}
-
-async function handleContinueCommand(
-  pi: ExtensionAPI,
-  _args: string,
-  ctx: ExtensionCommandContext,
-): Promise<void> {
-  if (!isLoopRunning(ctx.cwd)) {
-    ctx.ui.notify("No Ralph loop is running", "info");
-    return;
-  }
-
-  await continueLoop(pi, ctx);
 }
 
 async function handleLoopCommand(
@@ -152,15 +138,12 @@ async function handleResumeCommand(
   const currentSessionId = ctx.sessionManager.getSessionId();
   const reuseCurrentSession =
     Boolean(state.session_id) && currentSessionId === state.session_id;
-  const initialMessage = reuseCurrentSession ? "continue" : task;
-
   ctx.ui.notify(formatResumeNotification(state, reuseCurrentSession), "info");
   await runLoop(pi, ctx, task, state.max_iterations, {
     startIteration: state.iteration,
     startedAt: state.started_at || new Date().toISOString(),
     initialErrorCount: state.error_count,
     reuseCurrentSession,
-    initialMessage,
   });
 }
 
@@ -195,7 +178,6 @@ async function handleRestartCommand(
     startedAt: new Date().toISOString(),
     initialErrorCount: 0,
     reuseCurrentSession: false,
-    initialMessage: task,
   });
 }
 
@@ -237,11 +219,6 @@ function handleStatusCommand(
 }
 
 export function registerCommands(pi: ExtensionAPI): void {
-  pi.registerCommand("ralph-continue", {
-    description: "Internal Ralph loop continuation command",
-    handler: handleContinueCommand.bind(null, pi),
-  });
-
   pi.registerCommand("ralph-loop", {
     description:
       'Start a Ralph loop — run a task iteratively in fresh sessions until <promise>COMPLETE</promise> or max iterations. Usage: /ralph-loop "task" [--max-iterations=N]',

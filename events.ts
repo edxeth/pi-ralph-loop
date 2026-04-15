@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 import { readState, updateState } from "./state.js";
+import { handleLoopAgentEnd, handleLoopSessionStart } from "./loop-engine.js";
 
 function isLoopRunning(cwd: string): boolean {
   return readState(cwd)?.running === true;
@@ -77,15 +78,18 @@ function handleSessionStart(
       transitioning: false,
       cancel_requested: false,
       stop_requested: false,
-      next_message: "",
     });
     ctx.ui.setStatus("ralph-loop", undefined);
     return;
   }
 
   restoreLoopStatus(ctx);
+
+  // When this is a Ralph-managed new session, set up the iteration and
+  // send the task.  The command handler has already returned at this point,
+  // so the agent is NOT streaming and sendUserMessage can start a fresh prompt.
   if (event.reason === "new" && state.transitioning) {
-    pi.sendUserMessage("/ralph-continue");
+    handleLoopSessionStart(pi, ctx);
   }
 }
 
@@ -99,4 +103,8 @@ export function registerEventHandlers(pi: ExtensionAPI): void {
   );
   pi.on("session_shutdown", async (_event, ctx) => handleSessionShutdown(ctx));
   pi.on("session_start", handleSessionStart.bind(null, pi));
+  pi.on("agent_end", (event, ctx) => {
+    const messages = (event as { messages: Array<{ role: string; stopReason?: string; content?: unknown }> }).messages;
+    handleLoopAgentEnd(pi, messages, ctx);
+  });
 }

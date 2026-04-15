@@ -42,7 +42,6 @@ function makeState(overrides: Partial<RalphLoopState> = {}): RalphLoopState {
     transitioning: false,
     cancel_requested: false,
     stop_requested: false,
-    next_message: "task",
   };
   return { ...baseState, ...overrides };
 }
@@ -80,6 +79,7 @@ function createHarness(): Harness {
     sendUserMessage(message: string) {
       sentMessages.push(message);
     },
+    setSessionName(_name: string) {},
   } as unknown as ExtensionAPI;
 
   ralphLoopExtension(pi);
@@ -107,7 +107,6 @@ test("extension registers core commands", () => {
   const h = createHarness();
 
   for (const name of [
-    "ralph-continue",
     "ralph-loop",
     "ralph-resume",
     "ralph-restart",
@@ -154,11 +153,12 @@ test("ralph-stop marks persisted state for stopping", async () => {
   });
 });
 
-test("session_start queues internal continuation after a Ralph-created new session", async () => {
+test("session_start sends task text for Ralph-created new sessions", async () => {
   const h = createHarness();
   writeState(h.cwd, makeState({ transitioning: true }), "task");
 
   await h.sessionStart({ reason: "new" }, h.eventCtx);
 
-  assert.deepEqual(h.sentMessages, ["/ralph-continue"]);
+  // Event-driven architecture: session_start sends the task text directly.
+  assert.deepEqual(h.sentMessages, ["task"]);
 });

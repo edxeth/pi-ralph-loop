@@ -68,7 +68,6 @@ error_count: 0
 transitioning: false
 cancel_requested: false
 stop_requested: false
-next_message: "continue"
 ---
 
 <your task prompt here>
@@ -97,8 +96,8 @@ Or add to `~/.pi/agent/settings.json`:
 1. User runs `/ralph-loop "task" --max-iterations=N`
 2. Ralph persists loop state to `.ralph/loop.md`
 3. Ralph creates a fresh session via `ctx.newSession()`
-4. On the new session start, Ralph queues an internal continuation command
-5. The continuation names the session `Ralph loop iteration N/M`
+4. After the new session starts, Ralph continues the loop directly
+5. The session is named `Ralph loop iteration N/M`
 6. The task is sent via `pi.sendUserMessage(...)`
 7. Ralph waits for completion and reads the assistant control tag
 8. `<promise>NEXT</promise>` advances to the next fresh session

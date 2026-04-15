@@ -21,7 +21,6 @@ function makeState(): RalphLoopState {
     transitioning: false,
     cancel_requested: false,
     stop_requested: false,
-    next_message: "continue",
   };
 }
 
@@ -38,14 +37,12 @@ test("state round-trips and preserves task body", () => {
   updateState(cwd, {
     iteration: 3,
     stop_requested: true,
-    next_message: "implement feature x",
   });
 
   assert.deepEqual(readState(cwd), {
     ...state,
     iteration: 3,
     stop_requested: true,
-    next_message: "implement feature x",
   });
   assert.equal(getTaskBody(cwd), task);
 });

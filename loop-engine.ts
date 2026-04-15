@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { RalphLoopState, RunLoopOptions } from "./types.js";
 import { getTaskBody, readState, updateState, writeState } from "./state.js";
 
@@ -11,69 +11,45 @@ const FINAL_PROMISE_WARNING_NUDGE = [
   "- <promise>COMPLETE</promise> only when ALL tasks are fully done",
 ].join("\n");
 const ITERATION_DELAY_MS = 500;
-const EVENT_QUEUE_SETTLE_MS = 10000;
-const EVENT_QUEUE_POLL_MS = 100;
-const TERMINAL_STOP_REASONS = new Set(["stop", "length", "error", "aborted"]);
 const ERROR_RETRY_DELAY_MS = 2000;
 
+const TERMINAL_STOP_REASONS = new Set(["stop", "length", "error", "aborted"]);
+
 type ControlPromise = "NEXT" | "COMPLETE" | "STOP";
-type RequestedStopReason = "user_cancelled" | "manual_stop";
 
-type ActiveLoop = {
-  state: RalphLoopState;
-  task: string;
-};
-
-type IterationProgress = {
-  totalErrorCount: number;
-  providerRetries: number;
-  promiseNudges: number;
-  nextMessage: string;
-};
-
-type ContinueDecision =
-  | { kind: "retry" }
-  | { kind: "finish"; stopReason: RalphLoopState["stop_reason"] }
-  | { kind: "advance" };
-
-function shouldStop(cwd: string): boolean {
-  const state = readState(cwd);
-  return state?.cancel_requested === true || state?.stop_requested === true;
+// ── Stored command context ──────────────────────────────────────────────
+// The command handler (/ralph-loop, /ralph-resume, /ralph-restart) stores
+// the ExtensionCommandContext here so that event handlers (session_start,
+// agent_end) can call ctx.newSession() later.
+//
+// Stored on globalThis because pi reloads extension modules on newSession(),
+// which would reset a module-level variable to null.
+const CTX_KEY = "__ralph_loop_command_ctx__";
+function getCommandCtx(): ExtensionCommandContext | null {
+  return (globalThis as Record<string, unknown>)[CTX_KEY] as ExtensionCommandContext | null ?? null;
+}
+function setCommandCtx(ctx: ExtensionCommandContext | null): void {
+  (globalThis as Record<string, unknown>)[CTX_KEY] = ctx;
 }
 
-function getRequestedStopReason(cwd: string): RequestedStopReason {
-  return readState(cwd)?.cancel_requested === true ? "user_cancelled" : "manual_stop";
+// Per-iteration retry counters (reset on each fresh iteration).
+let _providerRetries = 0;
+let _promiseNudges = 0;
+
+function resetIterationCounters(): void {
+  _providerRetries = 0;
+  _promiseNudges = 0;
 }
 
-function getLastAssistantMessage(
-  ctx: ExtensionCommandContext,
-): { stopReason?: string; content?: unknown } | null {
-  const entries = ctx.sessionManager.getBranch();
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i];
-    if (
-      entry.type === "message" &&
-      "message" in entry &&
-      (entry.message as { role: string }).role === "assistant"
-    ) {
-      return entry.message as { stopReason?: string; content?: unknown };
-    }
-  }
-  return null;
+// ── Helpers ─────────────────────────────────────────────────────────────
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function wasAborted(ctx: ExtensionCommandContext): boolean {
-  return getLastAssistantMessage(ctx)?.stopReason === "aborted";
-}
-
-function hasError(ctx: ExtensionCommandContext): boolean {
-  return getLastAssistantMessage(ctx)?.stopReason === "error";
-}
-
-function getControlPromise(
-  ctx: ExtensionCommandContext,
+function extractControlPromise(
+  msg: { content?: unknown } | null,
 ): ControlPromise | null {
-  const msg = getLastAssistantMessage(ctx);
   if (!msg || !Array.isArray(msg.content)) return null;
 
   const text = (msg.content as Array<{ type: string; text?: string }>)
@@ -93,18 +69,8 @@ function getControlPromise(
   return match ? (match[1] as ControlPromise) : null;
 }
 
-function getLastAssistantStopReason(
-  ctx: ExtensionCommandContext,
-): string | null {
-  return getLastAssistantMessage(ctx)?.stopReason ?? null;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function setLoopStatus(
-  ctx: ExtensionCommandContext,
+  ctx: ExtensionContext,
   iteration: number,
   maxIterations: number,
 ): void {
@@ -115,12 +81,12 @@ function setLoopStatus(
   );
 }
 
-function clearLoopStatus(ctx: ExtensionCommandContext): void {
+function clearLoopStatus(ctx: ExtensionContext): void {
   ctx.ui.setStatus("ralph-loop", undefined);
 }
 
 function finalizeLoop(
-  ctx: ExtensionCommandContext,
+  ctx: ExtensionContext,
   cwd: string,
   stopReason: RalphLoopState["stop_reason"],
   errorCount: number,
@@ -135,135 +101,154 @@ function finalizeLoop(
     stop_requested: false,
   });
   clearLoopStatus(ctx);
+  setCommandCtx(null);
 }
 
-function loadActiveLoop(ctx: ExtensionCommandContext): ActiveLoop | null {
-  const state = readState(ctx.cwd);
-  const task = getTaskBody(ctx.cwd);
-  if (!state || !task || !state.running) return null;
-  return { state, task };
+function shouldStop(cwd: string): boolean {
+  const state = readState(cwd);
+  return state?.cancel_requested === true || state?.stop_requested === true;
 }
 
-function createIterationProgress(state: RalphLoopState, task: string): IterationProgress {
-  return {
-    totalErrorCount: state.error_count,
-    providerRetries: 0,
-    promiseNudges: 0,
-    nextMessage: state.next_message || task,
-  };
-}
-
-function syncIterationSession(
+// ── Session-start handler (called from events.ts) ───────────────────────
+/**
+ * Called when a new session starts while a Ralph loop is transitioning.
+ * Sends the task text as a user message to kick off the iteration.
+ *
+ * At this point the command handler has returned, so the agent is NOT
+ * streaming and `sendUserMessage` can start a fresh prompt.
+ */
+export function handleLoopSessionStart(
   pi: ExtensionAPI,
-  ctx: ExtensionCommandContext,
-  state: RalphLoopState,
-  cwd: string,
+  ctx: ExtensionContext,
 ): void {
+  const state = readState(ctx.cwd);
+  if (!state?.running || !state.transitioning) return;
+
+  const task = getTaskBody(ctx.cwd);
+  if (!task) return;
+
+  resetIterationCounters();
+
+  // Set up the iteration in the new session.
   setLoopStatus(ctx, state.iteration, state.max_iterations);
   ctx.ui.notify(`Ralph iteration ${state.iteration}/${state.max_iterations}`, "info");
   pi.setSessionName(`Ralph loop iteration ${state.iteration}/${state.max_iterations}`);
-  updateState(cwd, {
+  updateState(ctx.cwd, {
     transitioning: false,
     session_id: ctx.sessionManager.getSessionId(),
     last_session_file: ctx.sessionManager.getSessionFile() ?? null,
   });
+
+  // Send the task.  The agent is not streaming (command handler returned).
+  pi.sendUserMessage(task);
 }
 
-async function waitForSessionSettle(
-  ctx: ExtensionCommandContext,
-  cwd: string,
-): Promise<boolean> {
-  const deadline = Date.now() + EVENT_QUEUE_SETTLE_MS;
-  while (!shouldStop(cwd) && Date.now() < deadline) {
-    const stopReason = getLastAssistantStopReason(ctx);
-    if (stopReason !== null && TERMINAL_STOP_REASONS.has(stopReason)) {
-      return true;
-    }
-    await sleep(EVENT_QUEUE_POLL_MS);
-  }
-  return false;
-}
+// ── Agent-end handler (called from events.ts) ───────────────────────────
+type AgentEndMessages = Array<{ role: string; stopReason?: string; content?: unknown }>;
 
-async function sendAndWaitForCompletion(
+/**
+ * Called when the agent finishes a turn.  Drives the entire loop:
+ * check for promise tags, retry on errors, advance on NEXT, stop on
+ * COMPLETE/STOP/max_iterations.
+ */
+export function handleLoopAgentEnd(
   pi: ExtensionAPI,
-  ctx: ExtensionCommandContext,
-  cwd: string,
-  message: string,
-): Promise<boolean> {
-  pi.sendUserMessage(message);
+  messages: AgentEndMessages,
+  ctx: ExtensionContext,
+): void {
+  const state = readState(ctx.cwd);
+  if (!state?.running) return;
 
-  while (ctx.isIdle() && !shouldStop(cwd)) {
-    await sleep(100);
+  const cwd = ctx.cwd;
+
+  if (shouldStop(cwd)) {
+    const stopReason = state.cancel_requested ? "user_cancelled" : "manual_stop";
+    if (stopReason === "manual_stop") {
+      ctx.ui.notify("Ralph loop stopped manually", "info");
+    }
+    finalizeLoop(ctx, cwd, stopReason, state.error_count);
+    return;
   }
 
-  await ctx.waitForIdle();
-  return waitForSessionSettle(ctx, cwd);
-}
-
-async function startFreshIterationSession(
-  ctx: ExtensionCommandContext,
-  cwd: string,
-): Promise<boolean> {
-  updateState(cwd, { transitioning: true });
-  const result = await ctx.newSession();
-  if (result.cancelled) {
-    updateState(cwd, { transitioning: false });
-    return false;
+  // Find the last assistant message in the agent_end payload.
+  let assistant: { stopReason?: string; content?: unknown } | null = null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "assistant") {
+      assistant = messages[i];
+      break;
+    }
   }
-  return true;
-}
+  if (!assistant) return;
 
-function finishRequestedStop(
-  ctx: ExtensionCommandContext,
-  cwd: string,
-  errorCount: number,
-): ContinueDecision {
-  const stopReason = getRequestedStopReason(cwd);
-  if (stopReason === "manual_stop") {
-    ctx.ui.notify("Ralph loop stopped manually", "info");
-  }
-  finalizeLoop(ctx, cwd, stopReason, errorCount);
-  return { kind: "finish", stopReason };
-}
+  const stopReason = assistant.stopReason;
 
-async function handleRetryableFailure(
-  ctx: ExtensionCommandContext,
-  cwd: string,
-  progress: IterationProgress,
-  failureMessage: string,
-  retryMessage: (attempt: number) => string,
-): Promise<ContinueDecision> {
-  progress.providerRetries++;
-  progress.totalErrorCount++;
-  updateState(cwd, {
-    error_count: progress.totalErrorCount,
-    next_message: "continue",
-  });
-
-  if (progress.providerRetries > MAX_ERROR_RETRIES) {
-    ctx.ui.notify(failureMessage, "error");
-    finalizeLoop(ctx, cwd, "error", progress.totalErrorCount);
-    return { kind: "finish", stopReason: "error" };
+  // ── Aborted (Ctrl+C) ──
+  if (stopReason === "aborted") {
+    ctx.ui.notify(
+      `Ralph loop cancelled by user at iteration ${state.iteration}`,
+      "info",
+    );
+    finalizeLoop(ctx, cwd, "user_cancelled", state.error_count);
+    return;
   }
 
-  ctx.ui.notify(retryMessage(progress.providerRetries), "warning");
-  await sleep(ERROR_RETRY_DELAY_MS);
-  progress.nextMessage = "continue";
-  return { kind: "retry" };
-}
+  // ── Provider error ──
+  if (stopReason === "error") {
+    _providerRetries++;
+    const errorCount = state.error_count + 1;
+    updateState(cwd, { error_count: errorCount });
 
-function finishWithControlPromise(
-  ctx: ExtensionCommandContext,
-  cwd: string,
-  state: RalphLoopState,
-  task: string,
-  progress: IterationProgress,
-  controlPromise: ControlPromise | null,
-): ContinueDecision {
+    if (_providerRetries > MAX_ERROR_RETRIES) {
+      ctx.ui.notify(
+        `Ralph loop failed after ${state.iteration} iterations: provider error persists after ${MAX_ERROR_RETRIES} retries`,
+        "error",
+      );
+      finalizeLoop(ctx, cwd, "error", errorCount);
+      return;
+    }
+
+    ctx.ui.notify(
+      `Provider error, retrying (attempt ${_providerRetries}/${MAX_ERROR_RETRIES})...`,
+      "warning",
+    );
+    // Retry after a delay.
+    setTimeout(() => pi.sendUserMessage("continue"), ERROR_RETRY_DELAY_MS);
+    return;
+  }
+
+  // ── Non-terminal stop reason (e.g. missing stopReason after tool use) ──
+  if (!stopReason || !TERMINAL_STOP_REASONS.has(stopReason)) {
+    _providerRetries++;
+    const errorCount = state.error_count + 1;
+    updateState(cwd, { error_count: errorCount });
+
+    if (_providerRetries > MAX_ERROR_RETRIES) {
+      ctx.ui.notify(
+        `Ralph loop failed after ${state.iteration} iterations: agent kept ending without a terminal stopReason after ${MAX_ERROR_RETRIES} retries`,
+        "error",
+      );
+      finalizeLoop(ctx, cwd, "error", errorCount);
+      return;
+    }
+
+    ctx.ui.notify(
+      `Agent ended without terminal stopReason (likely transient provider failure after tool use); retrying with continue (${_providerRetries}/${MAX_ERROR_RETRIES})...`,
+      "warning",
+    );
+    setTimeout(() => pi.sendUserMessage("continue"), ERROR_RETRY_DELAY_MS);
+    return;
+  }
+
+  // ── Terminal stop — check for control promise ──
+  const controlPromise = extractControlPromise(assistant);
+
   if (controlPromise === "COMPLETE") {
-    ctx.ui.notify(`Ralph loop complete after ${state.iteration} iterations!`, "info");
-    finalizeLoop(ctx, cwd, "complete", progress.totalErrorCount);
-    return { kind: "finish", stopReason: "complete" };
+    ctx.ui.notify(
+      `Ralph loop complete after ${state.iteration} iterations!`,
+      "info",
+    );
+    finalizeLoop(ctx, cwd, "complete", state.error_count);
+    return;
   }
 
   if (controlPromise === "STOP") {
@@ -271,119 +256,74 @@ function finishWithControlPromise(
       `Ralph loop stopped by assistant at iteration ${state.iteration} via <promise>STOP</promise>`,
       "warning",
     );
-    finalizeLoop(ctx, cwd, "manual_stop", progress.totalErrorCount);
-    return { kind: "finish", stopReason: "manual_stop" };
+    finalizeLoop(ctx, cwd, "manual_stop", state.error_count);
+    return;
   }
 
   if (controlPromise === "NEXT") {
-    if (state.iteration === state.max_iterations) {
+    if (state.iteration >= state.max_iterations) {
       ctx.ui.notify(
         `Ralph loop reached max iterations (${state.max_iterations})`,
         "warning",
       );
-      finalizeLoop(ctx, cwd, "max_iterations", progress.totalErrorCount);
-      return { kind: "finish", stopReason: "max_iterations" };
+      finalizeLoop(ctx, cwd, "max_iterations", state.error_count);
+      return;
     }
 
+    // Advance to next iteration in a fresh session.
     updateState(cwd, {
       iteration: state.iteration + 1,
-      error_count: progress.totalErrorCount,
-      next_message: task,
+      transitioning: true,
     });
-    return { kind: "advance" };
+
+    // Create new session using the stored command context.
+    // This fires session_start → handleLoopSessionStart → sendUserMessage(task).
+    setTimeout(async () => {
+      const cmdCtx = getCommandCtx();
+      if (!cmdCtx) {
+        ctx.ui.notify("Ralph loop error: lost command context for session transition", "error");
+        finalizeLoop(ctx, cwd, "error", state.error_count);
+        return;
+      }
+      try {
+        const result = await cmdCtx.newSession();
+        if (result.cancelled) {
+          finalizeLoop(ctx, cwd, "user_cancelled", state.error_count);
+        }
+      } catch (err) {
+        ctx.ui.notify(
+          `Ralph loop error during session transition: ${err instanceof Error ? err.message : String(err)}`,
+          "error",
+        );
+        finalizeLoop(ctx, cwd, "error", state.error_count);
+      }
+    }, ITERATION_DELAY_MS);
+    return;
   }
 
-  progress.promiseNudges++;
-  if (progress.promiseNudges >= MAX_PROMISE_NUDGES) {
+  // ── No promise tag — nudge the assistant ──
+  _promiseNudges++;
+  if (_promiseNudges >= MAX_PROMISE_NUDGES) {
     ctx.ui.notify(
       `Ralph loop failed at iteration ${state.iteration}: assistant did not emit <promise>NEXT</promise>, <promise>COMPLETE</promise>, or <promise>STOP</promise> within ${MAX_PROMISE_NUDGES - 1} nudges`,
       "error",
     );
-    finalizeLoop(ctx, cwd, "error", progress.totalErrorCount);
-    return { kind: "finish", stopReason: "error" };
+    finalizeLoop(ctx, cwd, "error", state.error_count);
+    return;
   }
 
-  const isFinalWarningNudge = progress.promiseNudges === MAX_PROMISE_NUDGES - 1;
+  const isFinalWarningNudge = _promiseNudges === MAX_PROMISE_NUDGES - 1;
   ctx.ui.notify(
     isFinalWarningNudge
-      ? `Iteration ${state.iteration}/${state.max_iterations} still missing control promise; sending final warning nudge (${progress.promiseNudges}/${MAX_PROMISE_NUDGES - 1})`
-      : `Iteration ${state.iteration}/${state.max_iterations} missing control promise; nudging continue (${progress.promiseNudges}/${MAX_PROMISE_NUDGES - 1})`,
+      ? `Iteration ${state.iteration}/${state.max_iterations} still missing control promise; sending final warning nudge (${_promiseNudges}/${MAX_PROMISE_NUDGES - 1})`
+      : `Iteration ${state.iteration}/${state.max_iterations} missing control promise; nudging continue (${_promiseNudges}/${MAX_PROMISE_NUDGES - 1})`,
     "warning",
   );
-  progress.nextMessage = isFinalWarningNudge ? FINAL_PROMISE_WARNING_NUDGE : "continue";
-  return { kind: "retry" };
+  const nudgeText = isFinalWarningNudge ? FINAL_PROMISE_WARNING_NUDGE : "continue";
+  pi.sendUserMessage(nudgeText);
 }
 
-async function executeIterationTurn(
-  pi: ExtensionAPI,
-  ctx: ExtensionCommandContext,
-  activeLoop: ActiveLoop,
-  progress: IterationProgress,
-): Promise<ContinueDecision> {
-  const { state, task } = activeLoop;
-  const cwd = ctx.cwd;
-
-  updateState(cwd, { next_message: progress.nextMessage });
-  const turnCompleted = await sendAndWaitForCompletion(
-    pi,
-    ctx,
-    cwd,
-    progress.nextMessage,
-  );
-
-  if (!turnCompleted) {
-    return handleRetryableFailure(
-      ctx,
-      cwd,
-      progress,
-      `Ralph loop failed after ${state.iteration} iterations: agent kept ending without a terminal stopReason after ${MAX_ERROR_RETRIES} retries`,
-      (attempt) =>
-        `Agent ended without terminal stopReason (likely transient provider failure after tool use); retrying with continue (${attempt}/${MAX_ERROR_RETRIES})...`,
-    );
-  }
-
-  if (shouldStop(cwd)) {
-    return finishRequestedStop(ctx, cwd, progress.totalErrorCount);
-  }
-
-  if (wasAborted(ctx)) {
-    ctx.ui.notify(
-      `Ralph loop cancelled by user at iteration ${state.iteration}`,
-      "info",
-    );
-    finalizeLoop(ctx, cwd, "user_cancelled", progress.totalErrorCount);
-    return { kind: "finish", stopReason: "user_cancelled" };
-  }
-
-  if (hasError(ctx)) {
-    return handleRetryableFailure(
-      ctx,
-      cwd,
-      progress,
-      `Ralph loop failed after ${state.iteration} iterations: provider error persists after ${MAX_ERROR_RETRIES} retries`,
-      (attempt) => `Provider error, retrying (attempt ${attempt}/${MAX_ERROR_RETRIES})...`,
-    );
-  }
-
-  return finishWithControlPromise(
-    ctx,
-    cwd,
-    state,
-    task,
-    progress,
-    getControlPromise(ctx),
-  );
-}
-
-async function advanceIterationOrFinish(
-  ctx: ExtensionCommandContext,
-  progress: IterationProgress,
-): Promise<void> {
-  await sleep(ITERATION_DELAY_MS);
-  if (!(await startFreshIterationSession(ctx, ctx.cwd))) {
-    finalizeLoop(ctx, ctx.cwd, "user_cancelled", progress.totalErrorCount);
-  }
-}
+// ── Command-level entry points ──────────────────────────────────────────
 
 export async function runLoop(
   pi: ExtensionAPI,
@@ -397,7 +337,6 @@ export async function runLoop(
   const startedAt = options.startedAt ?? new Date().toISOString();
   const initialErrorCount = options.initialErrorCount ?? 0;
   const reuseCurrentSession = options.reuseCurrentSession === true;
-  const initialMessage = options.initialMessage ?? task;
 
   writeState(cwd, {
     running: true,
@@ -412,47 +351,77 @@ export async function runLoop(
     transitioning: !reuseCurrentSession,
     cancel_requested: false,
     stop_requested: false,
-    next_message: initialMessage,
   }, task);
 
+  setCommandCtx(ctx);
+  resetIterationCounters();
+
   ctx.ui.notify(`Ralph loop started (max ${maxIterations} iterations)`, "info");
+
   if (reuseCurrentSession) {
-    await continueLoop(pi, ctx);
+    // Resume in the current session: set up iteration state, send the task.
+    setLoopStatus(ctx, startIteration, maxIterations);
+    ctx.ui.notify(`Ralph iteration ${startIteration}/${maxIterations}`, "info");
+    pi.setSessionName(`Ralph loop iteration ${startIteration}/${maxIterations}`);
+    updateState(cwd, {
+      transitioning: false,
+      session_id: ctx.sessionManager.getSessionId(),
+      last_session_file: ctx.sessionManager.getSessionFile() ?? null,
+    });
+    // Send the task.  We're inside the command handler, but since
+    // reuseCurrentSession is true, the command handler returns and THEN
+    // the queued sendUserMessage is processed.
+    pi.sendUserMessage(task);
     return;
   }
 
-  if (!(await startFreshIterationSession(ctx, cwd))) {
+  // Create a fresh session.  The command handler returns, then:
+  // session_start → handleLoopSessionStart → sendUserMessage(task).
+  const result = await ctx.newSession();
+  if (result.cancelled) {
     finalizeLoop(ctx, cwd, "user_cancelled", initialErrorCount);
   }
 }
 
+/**
+ * Continue a loop that was interrupted in the current session.
+ * Only used when the current session matches the loop's session_id
+ * (i.e., we're already in the right session).
+ */
 export async function continueLoop(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
 ): Promise<void> {
-  const activeLoop = loadActiveLoop(ctx);
-  if (!activeLoop) {
+  const state = readState(ctx.cwd);
+  const task = getTaskBody(ctx.cwd);
+  if (!state || !task || !state.running) {
     ctx.ui.notify("No Ralph loop is running", "info");
     clearLoopStatus(ctx);
     return;
   }
 
   if (shouldStop(ctx.cwd)) {
-    finishRequestedStop(ctx, ctx.cwd, activeLoop.state.error_count);
+    const stopReason = state.cancel_requested ? "user_cancelled" : "manual_stop";
+    if (stopReason === "manual_stop") {
+      ctx.ui.notify("Ralph loop stopped manually", "info");
+    }
+    finalizeLoop(ctx, ctx.cwd, stopReason, state.error_count);
     return;
   }
 
-  syncIterationSession(pi, ctx, activeLoop.state, ctx.cwd);
-  const progress = createIterationProgress(activeLoop.state, activeLoop.task);
+  setCommandCtx(ctx);
+  resetIterationCounters();
 
-  while (!shouldStop(ctx.cwd)) {
-    const decision = await executeIterationTurn(pi, ctx, activeLoop, progress);
-    if (decision.kind === "finish") return;
-    if (decision.kind === "retry") continue;
+  // Set up the iteration.
+  setLoopStatus(ctx, state.iteration, state.max_iterations);
+  ctx.ui.notify(`Ralph iteration ${state.iteration}/${state.max_iterations}`, "info");
+  pi.setSessionName(`Ralph loop iteration ${state.iteration}/${state.max_iterations}`);
+  updateState(ctx.cwd, {
+    transitioning: false,
+    session_id: ctx.sessionManager.getSessionId(),
+    last_session_file: ctx.sessionManager.getSessionFile() ?? null,
+  });
 
-    await advanceIterationOrFinish(ctx, progress);
-    return;
-  }
-
-  finishRequestedStop(ctx, ctx.cwd, progress.totalErrorCount);
+  // Send the task.  The command handler returns, then pi processes the message.
+  pi.sendUserMessage(task);
 }

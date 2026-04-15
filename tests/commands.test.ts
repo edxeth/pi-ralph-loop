@@ -28,7 +28,6 @@ function makeCommandsState(overrides: Partial<RalphLoopState> = {}): RalphLoopSt
     transitioning: false,
     cancel_requested: false,
     stop_requested: false,
-    next_message: "task",
   };
   return { ...baseState, ...overrides };
 }
@@ -68,7 +67,6 @@ function createCommandsHarness() {
 test("registerCommands exposes the Ralph command set", () => {
   const h = createCommandsHarness();
   for (const name of [
-    "ralph-continue",
     "ralph-loop",
     "ralph-resume",
     "ralph-restart",
@@ -77,15 +75,6 @@ test("registerCommands exposes the Ralph command set", () => {
   ]) {
     assert.ok(h.commands.has(name));
   }
-});
-
-test("ralph-continue notifies when no loop is active", async () => {
-  const h = createCommandsHarness();
-  await h.commands.get("ralph-continue")!.handler("", h.ctx);
-  assert.deepEqual(h.notifications.at(-1), {
-    message: "No Ralph loop is running",
-    type: "info",
-  });
 });
 
 test("ralph-stop updates persisted stop state", async () => {
