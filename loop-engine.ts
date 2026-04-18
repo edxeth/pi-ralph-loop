@@ -74,10 +74,9 @@ function setLoopStatus(
   iteration: number,
   maxIterations: number,
 ): void {
-  const theme = ctx.ui.theme;
   ctx.ui.setStatus(
     "ralph-loop",
-    theme.fg("accent", `Ralph ${iteration}/${maxIterations}`),
+    `Ralph ${iteration}/${maxIterations}`,
   );
 }
 

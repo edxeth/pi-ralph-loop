@@ -11,10 +11,9 @@ function restoreLoopStatus(ctx: ExtensionContext): void {
   const state = readState(ctx.cwd);
   if (!state?.running) return;
 
-  const theme = ctx.ui.theme;
   ctx.ui.setStatus(
     "ralph-loop",
-    theme.fg("accent", `Ralph ${state.iteration}/${state.max_iterations}`),
+    `Ralph ${state.iteration}/${state.max_iterations}`,
   );
 }
 
