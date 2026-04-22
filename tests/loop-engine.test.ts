@@ -86,21 +86,31 @@ function createHarness(): Harness {
     },
   } as unknown as ExtensionAPI;
 
-  const ctx = {
-    cwd,
-    ui,
-    sessionManager: {
-      getBranch: () => branch,
-      getSessionId: () => sessionId,
-      getSessionFile: () => sessionFile,
-    },
-    isIdle: () => true,
-    waitForIdle: async () => {},
-    newSession: async () => {
-      newSessionCalls++;
-      return { cancelled: false };
-    },
-  } as unknown as ExtensionCommandContext;
+  let activeContextVersion = 1;
+  function makeCtx(version: number): ExtensionCommandContext {
+    return {
+      cwd,
+      ui,
+      sessionManager: {
+        getBranch: () => branch,
+        getSessionId: () => sessionId,
+        getSessionFile: () => sessionFile,
+      },
+      isIdle: () => true,
+      waitForIdle: async () => {},
+      newSession: async (options?: { withSession?: (ctx: ExtensionCommandContext) => Promise<void> }) => {
+        if (version !== activeContextVersion) {
+          throw new Error(`stale command context v${version}`);
+        }
+        newSessionCalls++;
+        activeContextVersion++;
+        await options?.withSession?.(makeCtx(activeContextVersion));
+        return { cancelled: false };
+      },
+    } as unknown as ExtensionCommandContext;
+  }
+
+  const ctx = makeCtx(activeContextVersion);
 
   // Mock ExtensionContext (same object minus command methods)
   const eventCtx = ctx as unknown;
@@ -165,6 +175,24 @@ test("agent_end with NEXT advances iteration and requests new session", async ()
   // newSession is called via setTimeout, so wait a tick.
   await new Promise((r) => setTimeout(r, 600));
   assert.equal(h.newSessionCalls, 1);
+});
+
+test("agent_end refreshes stored command context after each new session", async () => {
+  const h = createHarness();
+  h.writeState(makeBaseState({ iteration: 1, max_iterations: 4, transitioning: false }));
+
+  await continueLoop(h.pi, h.ctx);
+
+  h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+  await new Promise((r) => setTimeout(r, 600));
+  assert.equal(h.newSessionCalls, 1);
+
+  h.writeState(makeBaseState({ iteration: 2, max_iterations: 4, transitioning: false }));
+  h.simulateAgentEnd({ text: "Iteration 2\n<promise>NEXT</promise>" });
+  await new Promise((r) => setTimeout(r, 600));
+
+  assert.equal(h.newSessionCalls, 2);
+  assert.ok(!h.notifications.some((n) => n.message.includes("lost command context")));
 });
 
 test("agent_end with COMPLETE finalizes the loop", () => {
