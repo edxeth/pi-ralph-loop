@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -64,8 +64,33 @@ function makeBaseState(
 		progress_size: null,
 		progress_hash: null,
 		source_doc_hashes: null,
+		bundle_items_snapshot: null,
 	};
 	return { ...baseState, ...overrides };
+}
+
+function writeBundleItems(cwd: string, passes: boolean[]): void {
+	mkdirSync(join(cwd, ".ralph"), { recursive: true });
+	writeFileSync(join(cwd, ".ralph", "plan.md"), "plan\n");
+	writeFileSync(join(cwd, ".ralph", "prompt.md"), "prompt\n");
+	writeFileSync(join(cwd, ".ralph", "progress.md"), "progress\n");
+	writeFileSync(
+		join(cwd, ".ralph", "items.json"),
+		JSON.stringify(
+			{
+				version: 1,
+				items: passes.map((pass, index) => ({
+					category: "test",
+					description: `Item ${index + 1}`,
+					steps: ["Verify it"],
+					passes: pass,
+					regression_notes: "",
+				})),
+			},
+			null,
+			2,
+		),
+	);
 }
 
 function createHarness(): Harness {
@@ -173,6 +198,90 @@ test("runLoop initializes state and creates a fresh session", async () => {
 	assert.equal(state?.max_iterations, 3);
 	// transitioning remains true until session_start fires
 	assert.equal(state?.transitioning, true);
+});
+
+test("bundle NEXT accepts exactly one completed item", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [false, false]);
+	h.writeState(
+		makeBaseState({
+			iteration: 1,
+			max_iterations: 3,
+			transitioning: false,
+			bundle_mode: true,
+		}),
+	);
+
+	await continueLoop(h.pi, h.ctx);
+	writeBundleItems(h.cwd, [true, false]);
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	const state = h.readState();
+	assert.equal(state?.iteration, 2);
+	assert.equal(state?.transitioning, true);
+	await new Promise((r) => setTimeout(r, 600));
+	assert.equal(h.newSessionCalls, 1);
+});
+
+test("bundle NEXT rejects zero completed items", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [false]);
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	const state = h.readState();
+	assert.equal(state?.iteration, 1);
+	assert.equal(state?.transitioning, false);
+	assert.equal(h.newSessionCalls, 0);
+	assert.match(h.notifications.at(-1)?.message ?? "", /observed 0/);
+});
+
+test("bundle NEXT rejects multiple completed items", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [false, false]);
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	writeBundleItems(h.cwd, [true, true]);
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.iteration, 1);
+	assert.equal(h.newSessionCalls, 0);
+	assert.match(h.notifications.at(-1)?.message ?? "", /observed 2/);
+});
+
+test("bundle NEXT rejects immutable item changes", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [false]);
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	writeFileSync(
+		join(h.cwd, ".ralph", "items.json"),
+		JSON.stringify(
+			{
+				version: 1,
+				items: [
+					{
+						category: "test",
+						description: "Changed",
+						steps: ["Verify it"],
+						passes: true,
+						regression_notes: "",
+					},
+				],
+			},
+			null,
+			2,
+		),
+	);
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.iteration, 1);
+	assert.equal(h.newSessionCalls, 0);
+	assert.match(h.notifications.at(-1)?.message ?? "", /immutable fields changed/);
 });
 
 test("agent_end with NEXT advances iteration and requests new session", async () => {

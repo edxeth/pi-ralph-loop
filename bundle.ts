@@ -52,6 +52,7 @@ export type BundleSnapshot = {
 	progress_size: number;
 	progress_hash: string;
 	source_doc_hashes: string;
+	bundle_items_snapshot: string;
 };
 
 function fail(message: string): never {
@@ -195,6 +196,20 @@ function hashJson(value: unknown): string {
 	return hashText(JSON.stringify(value));
 }
 
+function snapshotItems(items: BundleItem[]): Array<{
+	category: string;
+	description: string;
+	steps: string[];
+	passes: boolean;
+}> {
+	return items.map((item) => ({
+		category: item.category,
+		description: item.description,
+		steps: item.steps,
+		passes: item.passes,
+	}));
+}
+
 function readGitHead(root: string): string | null {
 	try {
 		return execFileSync("git", ["rev-parse", "HEAD"], {
@@ -229,12 +244,7 @@ function hashSourceDocs(root: string, sourceDocs: string[] | undefined): Record<
 
 export function createBundleSnapshot(bundle: RalphBundle): BundleSnapshot {
 	const progress = readFileSync(bundle.files[".ralph/progress.md"], "utf8");
-	const immutableItems = bundle.items.items.map((item) => ({
-		category: item.category,
-		description: item.description,
-		steps: item.steps,
-		passes: item.passes,
-	}));
+	const immutableItems = snapshotItems(bundle.items.items);
 	const sourceHashes = hashSourceDocs(bundle.root, bundle.items.runtime_contract?.source_docs);
 	const gitHead = readGitHead(bundle.root);
 	const progressSize = statSync(bundle.files[".ralph/progress.md"]).size;
@@ -245,7 +255,46 @@ export function createBundleSnapshot(bundle: RalphBundle): BundleSnapshot {
 		progress_size: progressSize,
 		progress_hash: hashText(progress),
 		source_doc_hashes: JSON.stringify(sourceHashes),
+		bundle_items_snapshot: JSON.stringify(immutableItems),
 	};
+}
+
+export function evaluateNextGate(
+	previousSnapshotJson: string | null,
+	currentItems: BundleItem[],
+): string | null {
+	if (!previousSnapshotJson) return "missing pre-iteration item snapshot";
+
+	let previous: ReturnType<typeof snapshotItems>;
+	try {
+		previous = JSON.parse(previousSnapshotJson) as ReturnType<typeof snapshotItems>;
+	} catch {
+		return "invalid pre-iteration item snapshot";
+	}
+
+	if (previous.length !== currentItems.length) {
+		return "item count changed during the iteration";
+	}
+
+	let completed = 0;
+	for (let index = 0; index < previous.length; index++) {
+		const before = previous[index];
+		const after = currentItems[index];
+		if (
+			before.category !== after.category ||
+			before.description !== after.description ||
+			JSON.stringify(before.steps) !== JSON.stringify(after.steps)
+		) {
+			return `item ${index + 1} immutable fields changed`;
+		}
+		if (!before.passes && after.passes) completed++;
+	}
+
+	if (completed !== 1) {
+		return `exactly one item must move from passes=false to passes=true; observed ${completed}`;
+	}
+
+	return null;
 }
 
 export function loadRalphBundle(workspaceRoot: string): RalphBundle {

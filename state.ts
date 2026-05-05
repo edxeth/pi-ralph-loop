@@ -102,6 +102,10 @@ export function readState(cwd: string): RalphLoopState | null {
 				typeof data.progress_hash === "string" ? data.progress_hash : null,
 			source_doc_hashes:
 				typeof data.source_doc_hashes === "string" ? data.source_doc_hashes : null,
+			bundle_items_snapshot:
+				typeof data.bundle_items_snapshot === "string"
+					? data.bundle_items_snapshot
+					: null,
 		};
 	} catch {
 		return null;
@@ -146,6 +150,7 @@ export function writeState(
 		`progress_size: ${serializeValue(state.progress_size)}`,
 		`progress_hash: ${serializeValue(state.progress_hash)}`,
 		`source_doc_hashes: ${serializeValue(state.source_doc_hashes)}`,
+		`bundle_items_snapshot: ${serializeValue(state.bundle_items_snapshot)}`,
 		"---",
 	].join("\n");
 

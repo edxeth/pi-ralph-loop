@@ -4,7 +4,7 @@ import type {
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { randomUUID } from "node:crypto";
-import { createBundleSnapshot, loadRalphBundle } from "./bundle.js";
+import { createBundleSnapshot, evaluateNextGate, loadRalphBundle } from "./bundle.js";
 import { getTaskBody, readState, updateState, writeState } from "./state.js";
 import type { RalphLoopState, RunLoopOptions } from "./types.js";
 
@@ -302,6 +302,23 @@ export function handleLoopAgentEnd(
 	}
 
 	if (controlPromise === "NEXT") {
+		if (state.bundle_mode) {
+			let rejection: string | null;
+			try {
+				const bundle = loadRalphBundle(cwd);
+				rejection = evaluateNextGate(
+					state.bundle_items_snapshot,
+					bundle.items.items,
+				);
+			} catch (err) {
+				rejection = err instanceof Error ? err.message : String(err);
+			}
+			if (rejection) {
+				ctx.ui.notify(`Ralph rejected <promise>NEXT</promise>: ${rejection}`, "error");
+				return;
+			}
+		}
+
 		if (state.iteration >= state.max_iterations) {
 			ctx.ui.notify(
 				`Ralph loop reached max iterations (${state.max_iterations})`,
@@ -408,6 +425,7 @@ export async function runLoop(
 			progress_size: null,
 			progress_hash: null,
 			source_doc_hashes: null,
+			bundle_items_snapshot: null,
 		};
 
 	writeState(cwd, initialState, task);

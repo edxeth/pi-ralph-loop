@@ -41,6 +41,7 @@ function makeCommandsState(
 		progress_size: null,
 		progress_hash: null,
 		source_doc_hashes: null,
+		bundle_items_snapshot: null,
 	};
 	return { ...baseState, ...overrides };
 }
