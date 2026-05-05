@@ -57,6 +57,13 @@ function makeBaseState(
 		transitioning: true,
 		cancel_requested: false,
 		stop_requested: false,
+		bundle_mode: false,
+		loop_token: "token-1",
+		bundle_snapshot_hash: null,
+		items_snapshot_hash: null,
+		progress_size: null,
+		progress_hash: null,
+		source_doc_hashes: null,
 	};
 	return { ...baseState, ...overrides };
 }

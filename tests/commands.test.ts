@@ -10,7 +10,7 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 
 import { registerCommands } from "../commands.ts";
-import { writeState } from "../state.ts";
+import { readState, writeState } from "../state.ts";
 import type { RalphLoopState } from "../types.ts";
 
 type CommandDef = {
@@ -33,6 +33,13 @@ function makeCommandsState(
 		transitioning: false,
 		cancel_requested: false,
 		stop_requested: false,
+		bundle_mode: false,
+		loop_token: "token-1",
+		bundle_snapshot_hash: null,
+		items_snapshot_hash: null,
+		progress_size: null,
+		progress_hash: null,
+		source_doc_hashes: null,
 	};
 	return { ...baseState, ...overrides };
 }
@@ -136,6 +143,9 @@ test("ralph-loop starts bundle mode for @.ralph/prompt.md", async () => {
 		h.notifications.at(-1)?.message,
 		"Ralph loop started (max 3 iterations)",
 	);
+	const state = readState(h.cwd);
+	assert.equal(state?.bundle_mode, true);
+	assert.ok(state?.loop_token);
 });
 
 test("ralph-loop starts bundle mode for @./.ralph/prompt.md", async () => {
@@ -173,6 +183,19 @@ test("ralph-loop preserves non-bundle prompt references", async () => {
 		h.notifications.at(-1)?.message,
 		"Ralph loop started (max 100 iterations)",
 	);
+});
+
+test("ralph-loop rejects start when active loop state exists", async () => {
+	const h = createCommandsHarness();
+	writeState(h.cwd, makeCommandsState(), "task");
+
+	await h.commands.get("ralph-loop")?.handler("new task", h.ctx);
+
+	assert.equal(h.getNewSessionCount(), 0);
+	assert.deepEqual(h.notifications.at(-1), {
+		message: "A Ralph loop is already running",
+		type: "error",
+	});
 });
 
 test("ralph-stop updates persisted stop state", async () => {

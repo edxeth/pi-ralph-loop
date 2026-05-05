@@ -111,7 +111,8 @@ async function handleLoopCommand(
 	}
 
 	let task = parsed.task;
-	if (normalizeBundlePromptReference(task)) {
+	const bundleMode = normalizeBundlePromptReference(task) !== null;
+	if (bundleMode) {
 		try {
 			const bundle = loadRalphBundle(ctx.cwd);
 			task = readFileSync(bundle.files[".ralph/prompt.md"], "utf8");
@@ -121,7 +122,7 @@ async function handleLoopCommand(
 		}
 	}
 
-	await runLoop(pi, ctx, task, parsed.maxIterations);
+	await runLoop(pi, ctx, task, parsed.maxIterations, { bundleMode });
 }
 
 async function handleResumeCommand(

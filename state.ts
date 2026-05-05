@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RalphLoopState } from "./types.js";
@@ -82,6 +83,25 @@ export function readState(cwd: string): RalphLoopState | null {
 			transitioning: data.transitioning === true,
 			cancel_requested: data.cancel_requested === true,
 			stop_requested: data.stop_requested === true,
+			bundle_mode: data.bundle_mode === true,
+			loop_token:
+				typeof data.loop_token === "string" && data.loop_token.length > 0
+					? data.loop_token
+					: randomUUID(),
+			bundle_snapshot_hash:
+				typeof data.bundle_snapshot_hash === "string"
+					? data.bundle_snapshot_hash
+					: null,
+			items_snapshot_hash:
+				typeof data.items_snapshot_hash === "string"
+					? data.items_snapshot_hash
+					: null,
+			progress_size:
+				typeof data.progress_size === "number" ? data.progress_size : null,
+			progress_hash:
+				typeof data.progress_hash === "string" ? data.progress_hash : null,
+			source_doc_hashes:
+				typeof data.source_doc_hashes === "string" ? data.source_doc_hashes : null,
 		};
 	} catch {
 		return null;
@@ -119,6 +139,13 @@ export function writeState(
 		`transitioning: ${serializeValue(state.transitioning)}`,
 		`cancel_requested: ${serializeValue(state.cancel_requested)}`,
 		`stop_requested: ${serializeValue(state.stop_requested)}`,
+		`bundle_mode: ${serializeValue(state.bundle_mode)}`,
+		`loop_token: ${serializeValue(state.loop_token)}`,
+		`bundle_snapshot_hash: ${serializeValue(state.bundle_snapshot_hash)}`,
+		`items_snapshot_hash: ${serializeValue(state.items_snapshot_hash)}`,
+		`progress_size: ${serializeValue(state.progress_size)}`,
+		`progress_hash: ${serializeValue(state.progress_hash)}`,
+		`source_doc_hashes: ${serializeValue(state.source_doc_hashes)}`,
 		"---",
 	].join("\n");
 

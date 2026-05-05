@@ -20,6 +20,13 @@ export interface RalphLoopState {
 	transitioning: boolean;
 	cancel_requested: boolean;
 	stop_requested: boolean;
+	bundle_mode: boolean;
+	loop_token: string;
+	bundle_snapshot_hash: string | null;
+	items_snapshot_hash: string | null;
+	progress_size: number | null;
+	progress_hash: string | null;
+	source_doc_hashes: string | null;
 }
 
 /** Parsed arguments from /ralph-loop command */
@@ -34,4 +41,5 @@ export interface RunLoopOptions {
 	startedAt?: string;
 	initialErrorCount?: number;
 	reuseCurrentSession?: boolean;
+	bundleMode?: boolean;
 }

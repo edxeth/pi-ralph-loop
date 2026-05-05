@@ -3,6 +3,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import { randomUUID } from "node:crypto";
 import { getTaskBody, readState, updateState, writeState } from "./state.js";
 import type { RalphLoopState, RunLoopOptions } from "./types.js";
 
@@ -376,6 +377,7 @@ export async function runLoop(
 	const startedAt = options.startedAt ?? new Date().toISOString();
 	const initialErrorCount = options.initialErrorCount ?? 0;
 	const reuseCurrentSession = options.reuseCurrentSession === true;
+	const bundleMode = options.bundleMode === true;
 
 	writeState(
 		cwd,
@@ -392,6 +394,13 @@ export async function runLoop(
 			transitioning: !reuseCurrentSession,
 			cancel_requested: false,
 			stop_requested: false,
+			bundle_mode: bundleMode,
+			loop_token: randomUUID(),
+			bundle_snapshot_hash: null,
+			items_snapshot_hash: null,
+			progress_size: null,
+			progress_hash: null,
+			source_doc_hashes: null,
 		},
 		task,
 	);
