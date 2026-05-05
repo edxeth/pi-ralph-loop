@@ -229,6 +229,43 @@ test("bundle NEXT accepts exactly one completed item", async () => {
 	assert.equal(h.newSessionCalls, 1);
 });
 
+test("bundle NEXT runs configured verification gates", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [false], {
+		verification_gates: [{ name: "pass", command: "node -e \"process.exit(0)\"" }],
+	});
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	writeBundleItems(h.cwd, [true], {
+		verification_gates: [{ name: "pass", command: "node -e \"process.exit(0)\"" }],
+	});
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.iteration, 2);
+	await new Promise((r) => setTimeout(r, 600));
+	assert.equal(h.newSessionCalls, 1);
+});
+
+test("bundle NEXT rejects failed verification gates", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [false], {
+		verification_gates: [{ name: "fail", command: "node -e \"console.error('bad gate'); process.exit(2)\"" }],
+	});
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	writeBundleItems(h.cwd, [true], {
+		verification_gates: [{ name: "fail", command: "node -e \"console.error('bad gate'); process.exit(2)\"" }],
+	});
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.iteration, 1);
+	assert.equal(h.newSessionCalls, 0);
+	assert.match(h.notifications.at(-1)?.message ?? "", /verification gate fail exited with code 2/);
+	assert.match(h.sentMessages.at(-1) ?? "", /bad gate/);
+});
+
 test("bundle NEXT rejects zero completed items", async () => {
 	const h = createHarness();
 	writeBundleItems(h.cwd, [false]);
@@ -454,6 +491,24 @@ test("bundle COMPLETE rejects unfinished items", async () => {
 	assert.match(h.sentMessages.at(-1) ?? "", /^Ralph rejected <promise>COMPLETE<\/promise>\./);
 	assert.match(h.sentMessages.at(-1) ?? "", /Failed invariant: COMPLETE requires every item/);
 	assert.match(h.sentMessages.at(-1) ?? "", /Continue this same iteration/);
+});
+
+test("bundle COMPLETE rejects failed verification gates", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [true], {
+		verification_gates: [{ name: "complete", command: "node -e \"console.error('complete bad'); process.exit(3)\"" }],
+	});
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	h.simulateAgentEnd({ text: "All done\n<promise>COMPLETE</promise>" });
+
+	const state = h.readState();
+	assert.equal(state?.running, true);
+	assert.equal(state?.stop_reason, null);
+	assert.equal(h.newSessionCalls, 0);
+	assert.match(h.notifications.at(-1)?.message ?? "", /verification gate complete exited with code 3/);
+	assert.match(h.sentMessages.at(-1) ?? "", /complete bad/);
 });
 
 test("bundle COMPLETE rejects immutable item changes", async () => {
