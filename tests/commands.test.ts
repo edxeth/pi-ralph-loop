@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -42,6 +42,7 @@ function createCommandsHarness() {
 	const commands = new Map<string, CommandDef>();
 	const notifications: Array<{ message: string; type: string }> = [];
 	const sentMessages: string[] = [];
+	let newSessionCount = 0;
 
 	const pi = {
 		registerCommand(name: string, command: CommandDef) {
@@ -60,13 +61,53 @@ function createCommandsHarness() {
 			notify(message: string, type: string) {
 				notifications.push({ message, type });
 			},
+			setWorkingVisible(_visible: boolean) {},
+			setStatus(_key: string, _value: string | undefined) {},
 		},
 		sessionManager: {
 			getSessionId: () => "session-1",
+			getSessionFile: () => "/sessions/session-1.jsonl",
+		},
+		newSession() {
+			newSessionCount++;
+			return Promise.resolve({ cancelled: false });
 		},
 	} as unknown as ExtensionCommandContext;
 
-	return { cwd, commands, notifications, sentMessages, ctx };
+	return {
+		cwd,
+		commands,
+		notifications,
+		sentMessages,
+		ctx,
+		getNewSessionCount: () => newSessionCount,
+	};
+}
+
+function writeValidBundle(cwd: string): void {
+	mkdirSync(join(cwd, ".ralph"), { recursive: true });
+	writeFileSync(join(cwd, ".ralph", "plan.md"), "plan\n");
+	writeFileSync(join(cwd, ".ralph", "prompt.md"), "bundle prompt\n");
+	writeFileSync(join(cwd, ".ralph", "progress.md"), "progress\n");
+	writeFileSync(
+		join(cwd, ".ralph", "items.json"),
+		JSON.stringify(
+			{
+				version: 1,
+				items: [
+					{
+						category: "test",
+						description: "Do the thing",
+						steps: ["Verify it"],
+						passes: false,
+						regression_notes: "",
+					},
+				],
+			},
+			null,
+			2,
+		),
+	);
 }
 
 test("registerCommands exposes the Ralph command set", () => {
@@ -80,6 +121,58 @@ test("registerCommands exposes the Ralph command set", () => {
 	]) {
 		assert.ok(h.commands.has(name));
 	}
+});
+
+test("ralph-loop starts bundle mode for @.ralph/prompt.md", async () => {
+	const h = createCommandsHarness();
+	writeValidBundle(h.cwd);
+
+	await h.commands
+		.get("ralph-loop")
+		?.handler("@.ralph/prompt.md --max-iterations=3", h.ctx);
+
+	assert.equal(h.getNewSessionCount(), 1);
+	assert.equal(
+		h.notifications.at(-1)?.message,
+		"Ralph loop started (max 3 iterations)",
+	);
+});
+
+test("ralph-loop starts bundle mode for @./.ralph/prompt.md", async () => {
+	const h = createCommandsHarness();
+	writeValidBundle(h.cwd);
+
+	await h.commands.get("ralph-loop")?.handler('"@./.ralph/prompt.md"', h.ctx);
+
+	assert.equal(h.getNewSessionCount(), 1);
+	assert.equal(
+		h.notifications.at(-1)?.message,
+		"Ralph loop started (max 100 iterations)",
+	);
+});
+
+test("ralph-loop rejects bundle mode when bundle validation fails", async () => {
+	const h = createCommandsHarness();
+
+	await h.commands.get("ralph-loop")?.handler("@.ralph/prompt.md", h.ctx);
+
+	assert.equal(h.getNewSessionCount(), 0);
+	assert.deepEqual(h.notifications.at(-1), {
+		message: "Invalid Ralph bundle: .ralph/plan.md is missing",
+		type: "error",
+	});
+});
+
+test("ralph-loop preserves non-bundle prompt references", async () => {
+	const h = createCommandsHarness();
+
+	await h.commands.get("ralph-loop")?.handler("@notes.md", h.ctx);
+
+	assert.equal(h.getNewSessionCount(), 1);
+	assert.equal(
+		h.notifications.at(-1)?.message,
+		"Ralph loop started (max 100 iterations)",
+	);
 });
 
 test("ralph-stop updates persisted stop state", async () => {

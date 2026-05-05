@@ -3,6 +3,10 @@ import type {
 	ExtensionCommandContext,
 } from "@mariozechner/pi-coding-agent";
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
+import { loadRalphBundle } from "./bundle.js";
 import { runLoop } from "./loop-engine.js";
 import { parseArgs } from "./parser.js";
 import { getTaskBody, readState, updateState } from "./state.js";
@@ -34,6 +38,15 @@ function ensureLoopNotRunning(ctx: ExtensionCommandContext): boolean {
 	if (!isLoopRunning(ctx.cwd)) return true;
 	notifyLoopAlreadyRunning(ctx);
 	return false;
+}
+
+function normalizeBundlePromptReference(task: string): string | null {
+	const trimmed = task.trim();
+	if (!trimmed.startsWith("@")) return null;
+
+	const reference = trimmed.slice(1);
+	const normalized = path.posix.normalize(reference.replaceAll("\\", "/"));
+	return normalized === ".ralph/prompt.md" ? normalized : null;
 }
 
 function getLoopArgumentCompletions(prefix: string) {
@@ -97,7 +110,18 @@ async function handleLoopCommand(
 		return;
 	}
 
-	await runLoop(pi, ctx, parsed.task, parsed.maxIterations);
+	let task = parsed.task;
+	if (normalizeBundlePromptReference(task)) {
+		try {
+			const bundle = loadRalphBundle(ctx.cwd);
+			task = readFileSync(bundle.files[".ralph/prompt.md"], "utf8");
+		} catch (err) {
+			ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
+			return;
+		}
+	}
+
+	await runLoop(pi, ctx, task, parsed.maxIterations);
 }
 
 async function handleResumeCommand(
