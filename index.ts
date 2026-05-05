@@ -12,6 +12,6 @@ import { registerCommands } from "./commands.js";
 import { registerEventHandlers } from "./events.js";
 
 export default function ralphLoopExtension(pi: ExtensionAPI): void {
-  registerCommands(pi);
-  registerEventHandlers(pi);
+	registerCommands(pi);
+	registerEventHandlers(pi);
 }

@@ -6,4 +6,5 @@ scorecard.png
 *.js.map
 *.d.ts
 *.d.ts.map
+bun.lock
 package-lock.json

@@ -15,40 +15,40 @@ const DEFAULT_MAX_ITERATIONS = 100;
  * @returns ParsedArgs or null if parsing fails (empty task)
  */
 export function parseArgs(raw: string): ParsedArgs | null {
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
+	const trimmed = raw.trim();
+	if (!trimmed) return null;
 
-  let maxIterations = DEFAULT_MAX_ITERATIONS;
-  let taskPart = trimmed;
+	let maxIterations = DEFAULT_MAX_ITERATIONS;
+	let taskPart = trimmed;
 
-  // Extract --max-iterations=N or --max-iterations N
-  const eqPattern = /--max-iterations=(\d+)/i;
-  const spacePattern = /--max-iterations\s+(\d+)/i;
+	// Extract --max-iterations=N or --max-iterations N
+	const eqPattern = /--max-iterations=(\d+)/i;
+	const spacePattern = /--max-iterations\s+(\d+)/i;
 
-  const eqMatch = taskPart.match(eqPattern);
-  if (eqMatch) {
-    maxIterations = parseInt(eqMatch[1], 10);
-    taskPart = taskPart.replace(eqPattern, "").trim();
-  } else {
-    const spaceMatch = taskPart.match(spacePattern);
-    if (spaceMatch) {
-      maxIterations = parseInt(spaceMatch[1], 10);
-      taskPart = taskPart.replace(spacePattern, "").trim();
-    }
-  }
+	const eqMatch = taskPart.match(eqPattern);
+	if (eqMatch) {
+		maxIterations = parseInt(eqMatch[1], 10);
+		taskPart = taskPart.replace(eqPattern, "").trim();
+	} else {
+		const spaceMatch = taskPart.match(spacePattern);
+		if (spaceMatch) {
+			maxIterations = parseInt(spaceMatch[1], 10);
+			taskPart = taskPart.replace(spacePattern, "").trim();
+		}
+	}
 
-  // Strip surrounding quotes from the task if present
-  if (
-    (taskPart.startsWith('"') && taskPart.endsWith('"')) ||
-    (taskPart.startsWith("'") && taskPart.endsWith("'"))
-  ) {
-    taskPart = taskPart.slice(1, -1);
-  }
+	// Strip surrounding quotes from the task if present
+	if (
+		(taskPart.startsWith('"') && taskPart.endsWith('"')) ||
+		(taskPart.startsWith("'") && taskPart.endsWith("'"))
+	) {
+		taskPart = taskPart.slice(1, -1);
+	}
 
-  taskPart = taskPart.trim();
-  if (!taskPart) return null;
+	taskPart = taskPart.trim();
+	if (!taskPart) return null;
 
-  if (maxIterations <= 0 || !Number.isFinite(maxIterations)) return null;
+	if (maxIterations <= 0 || !Number.isFinite(maxIterations)) return null;
 
-  return { task: taskPart, maxIterations };
+	return { task: taskPart, maxIterations };
 }
