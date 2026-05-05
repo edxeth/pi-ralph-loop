@@ -8,3 +8,5 @@ scorecard.png
 *.d.ts.map
 bun.lock
 package-lock.json
+.pi/
+.ralph/
