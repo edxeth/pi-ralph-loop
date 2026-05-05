@@ -27,6 +27,7 @@ function makeState(): RalphLoopState {
 		items_snapshot_hash: null,
 		progress_size: null,
 		progress_hash: null,
+		progress_snapshot: null,
 		source_doc_hashes: null,
 		bundle_items_snapshot: null,
 	};
@@ -89,6 +90,7 @@ test("old state files parse with default bundle metadata", () => {
 	assert.equal(state?.items_snapshot_hash, null);
 	assert.equal(state?.progress_size, null);
 	assert.equal(state?.progress_hash, null);
+	assert.equal(state?.progress_snapshot, null);
 	assert.equal(state?.source_doc_hashes, null);
 	assert.equal(getTaskBody(cwd), "legacy task");
 });

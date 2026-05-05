@@ -100,6 +100,8 @@ export function readState(cwd: string): RalphLoopState | null {
 				typeof data.progress_size === "number" ? data.progress_size : null,
 			progress_hash:
 				typeof data.progress_hash === "string" ? data.progress_hash : null,
+			progress_snapshot:
+				typeof data.progress_snapshot === "string" ? data.progress_snapshot : null,
 			source_doc_hashes:
 				typeof data.source_doc_hashes === "string" ? data.source_doc_hashes : null,
 			bundle_items_snapshot:
@@ -149,6 +151,7 @@ export function writeState(
 		`items_snapshot_hash: ${serializeValue(state.items_snapshot_hash)}`,
 		`progress_size: ${serializeValue(state.progress_size)}`,
 		`progress_hash: ${serializeValue(state.progress_hash)}`,
+		`progress_snapshot: ${serializeValue(state.progress_snapshot)}`,
 		`source_doc_hashes: ${serializeValue(state.source_doc_hashes)}`,
 		`bundle_items_snapshot: ${serializeValue(state.bundle_items_snapshot)}`,
 		"---",

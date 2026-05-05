@@ -26,6 +26,7 @@ export interface RalphLoopState {
 	items_snapshot_hash: string | null;
 	progress_size: number | null;
 	progress_hash: string | null;
+	progress_snapshot: string | null;
 	source_doc_hashes: string | null;
 	bundle_items_snapshot: string | null;
 }

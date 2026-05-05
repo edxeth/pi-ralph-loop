@@ -40,6 +40,7 @@ function makeCommandsState(
 		items_snapshot_hash: null,
 		progress_size: null,
 		progress_hash: null,
+		progress_snapshot: null,
 		source_doc_hashes: null,
 		bundle_items_snapshot: null,
 	};
@@ -107,6 +108,8 @@ function writeValidBundle(cwd: string): void {
 				version: 1,
 				runtime_contract: {
 					source_docs: [".pi/plans/prds/source.md"],
+					require_progress_append: true,
+					require_clean_source_docs: true,
 				},
 				items: [
 					{
@@ -162,6 +165,7 @@ test("ralph-loop starts bundle mode for @.ralph/prompt.md", async () => {
 	assert.ok(state?.items_snapshot_hash);
 	assert.equal(state?.progress_size, 9);
 	assert.ok(state?.progress_hash);
+	assert.ok(state?.progress_snapshot);
 	assert.match(state?.source_doc_hashes ?? "", /source\.md/);
 });
 

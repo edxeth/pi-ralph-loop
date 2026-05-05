@@ -4,7 +4,7 @@ import type {
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { randomUUID } from "node:crypto";
-import { createBundleSnapshot, evaluateCompleteGate, evaluateNextGate, loadRalphBundle } from "./bundle.js";
+import { createBundleSnapshot, evaluateBundleFileGate, evaluateCompleteGate, evaluateNextGate, loadRalphBundle } from "./bundle.js";
 import { getTaskBody, readState, updateState, writeState } from "./state.js";
 import type { RalphLoopState, RunLoopOptions } from "./types.js";
 
@@ -312,7 +312,7 @@ export function handleLoopAgentEnd(
 				rejection = evaluateCompleteGate(
 					state.bundle_items_snapshot,
 					bundle.items.items,
-				);
+				) ?? evaluateBundleFileGate(bundle, state);
 			} catch (err) {
 				rejection = err instanceof Error ? err.message : String(err);
 			}
@@ -347,7 +347,7 @@ export function handleLoopAgentEnd(
 				rejection = evaluateNextGate(
 					state.bundle_items_snapshot,
 					bundle.items.items,
-				);
+				) ?? evaluateBundleFileGate(bundle, state);
 			} catch (err) {
 				rejection = err instanceof Error ? err.message : String(err);
 			}
@@ -462,6 +462,7 @@ export async function runLoop(
 			items_snapshot_hash: null,
 			progress_size: null,
 			progress_hash: null,
+			progress_snapshot: null,
 			source_doc_hashes: null,
 			bundle_items_snapshot: null,
 		};

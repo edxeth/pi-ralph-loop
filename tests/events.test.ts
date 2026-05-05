@@ -37,6 +37,7 @@ function makeEventsState(
 		items_snapshot_hash: null,
 		progress_size: null,
 		progress_hash: null,
+		progress_snapshot: null,
 		source_doc_hashes: null,
 		bundle_items_snapshot: null,
 	};

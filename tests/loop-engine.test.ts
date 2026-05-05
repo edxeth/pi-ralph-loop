@@ -63,13 +63,18 @@ function makeBaseState(
 		items_snapshot_hash: null,
 		progress_size: null,
 		progress_hash: null,
+		progress_snapshot: null,
 		source_doc_hashes: null,
 		bundle_items_snapshot: null,
 	};
 	return { ...baseState, ...overrides };
 }
 
-function writeBundleItems(cwd: string, passes: boolean[]): void {
+function writeBundleItems(
+	cwd: string,
+	passes: boolean[],
+	runtime_contract: Record<string, unknown> | undefined = undefined,
+): void {
 	mkdirSync(join(cwd, ".ralph"), { recursive: true });
 	writeFileSync(join(cwd, ".ralph", "plan.md"), "plan\n");
 	writeFileSync(join(cwd, ".ralph", "prompt.md"), "prompt\n");
@@ -79,6 +84,7 @@ function writeBundleItems(cwd: string, passes: boolean[]): void {
 		JSON.stringify(
 			{
 				version: 1,
+				...(runtime_contract ? { runtime_contract } : {}),
 				items: passes.map((pass, index) => ({
 					category: "test",
 					description: `Item ${index + 1}`,
@@ -253,6 +259,74 @@ test("bundle NEXT rejects multiple completed items", async () => {
 	assert.equal(h.readState()?.iteration, 1);
 	assert.equal(h.newSessionCalls, 0);
 	assert.match(h.notifications.at(-1)?.message ?? "", /observed 2/);
+});
+
+test("bundle NEXT rejects progress rewrite", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [false], { require_progress_append: true });
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	writeBundleItems(h.cwd, [true], { require_progress_append: true });
+	writeFileSync(join(h.cwd, ".ralph", "progress.md"), "changed progress\n");
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.iteration, 1);
+	assert.equal(h.newSessionCalls, 0);
+	assert.match(h.notifications.at(-1)?.message ?? "", /previous content as an exact prefix/);
+});
+
+test("bundle NEXT rejects missing progress append", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [false], { require_progress_append: true });
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	writeBundleItems(h.cwd, [true], { require_progress_append: true });
+	writeFileSync(join(h.cwd, ".ralph", "progress.md"), "progress\n");
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.iteration, 1);
+	assert.equal(h.newSessionCalls, 0);
+	assert.match(h.notifications.at(-1)?.message ?? "", /progress\.md must grow/);
+});
+
+test("bundle NEXT accepts progress append", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [false], { require_progress_append: true });
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	writeBundleItems(h.cwd, [true], { require_progress_append: true });
+	writeFileSync(join(h.cwd, ".ralph", "progress.md"), "progress\n\nentry\n");
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.iteration, 2);
+	await new Promise((r) => setTimeout(r, 600));
+	assert.equal(h.newSessionCalls, 1);
+});
+
+test("bundle NEXT rejects source document mutation", async () => {
+	const h = createHarness();
+	mkdirSync(join(h.cwd, "docs"), { recursive: true });
+	writeFileSync(join(h.cwd, "docs", "source.md"), "source\n");
+	writeBundleItems(h.cwd, [false], {
+		source_docs: ["docs/source.md"],
+		require_clean_source_docs: true,
+	});
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	writeBundleItems(h.cwd, [true], {
+		source_docs: ["docs/source.md"],
+		require_clean_source_docs: true,
+	});
+	writeFileSync(join(h.cwd, "docs", "source.md"), "changed\n");
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.iteration, 1);
+	assert.equal(h.newSessionCalls, 0);
+	assert.match(h.notifications.at(-1)?.message ?? "", /docs\/source\.md changed/);
 });
 
 test("bundle NEXT rejects immutable item changes", async () => {
