@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -93,14 +94,19 @@ function createCommandsHarness() {
 
 function writeValidBundle(cwd: string): void {
 	mkdirSync(join(cwd, ".ralph"), { recursive: true });
+	mkdirSync(join(cwd, ".pi", "plans", "prds"), { recursive: true });
 	writeFileSync(join(cwd, ".ralph", "plan.md"), "plan\n");
 	writeFileSync(join(cwd, ".ralph", "prompt.md"), "bundle prompt\n");
 	writeFileSync(join(cwd, ".ralph", "progress.md"), "progress\n");
+	writeFileSync(join(cwd, ".pi", "plans", "prds", "source.md"), "source\n");
 	writeFileSync(
 		join(cwd, ".ralph", "items.json"),
 		JSON.stringify(
 			{
 				version: 1,
+				runtime_contract: {
+					source_docs: [".pi/plans/prds/source.md"],
+				},
 				items: [
 					{
 						category: "test",
@@ -133,6 +139,11 @@ test("registerCommands exposes the Ralph command set", () => {
 test("ralph-loop starts bundle mode for @.ralph/prompt.md", async () => {
 	const h = createCommandsHarness();
 	writeValidBundle(h.cwd);
+	execFileSync("git", ["init"], { cwd: h.cwd, stdio: "ignore" });
+	execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: h.cwd });
+	execFileSync("git", ["config", "user.name", "Test User"], { cwd: h.cwd });
+	execFileSync("git", ["add", "."], { cwd: h.cwd });
+	execFileSync("git", ["commit", "-m", "initial"], { cwd: h.cwd, stdio: "ignore" });
 
 	await h.commands
 		.get("ralph-loop")
@@ -146,6 +157,11 @@ test("ralph-loop starts bundle mode for @.ralph/prompt.md", async () => {
 	const state = readState(h.cwd);
 	assert.equal(state?.bundle_mode, true);
 	assert.ok(state?.loop_token);
+	assert.ok(state?.bundle_snapshot_hash);
+	assert.ok(state?.items_snapshot_hash);
+	assert.equal(state?.progress_size, 9);
+	assert.ok(state?.progress_hash);
+	assert.match(state?.source_doc_hashes ?? "", /source\.md/);
 });
 
 test("ralph-loop starts bundle mode for @./.ralph/prompt.md", async () => {

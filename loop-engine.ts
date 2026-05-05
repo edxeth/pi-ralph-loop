@@ -4,6 +4,7 @@ import type {
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { randomUUID } from "node:crypto";
+import { createBundleSnapshot, loadRalphBundle } from "./bundle.js";
 import { getTaskBody, readState, updateState, writeState } from "./state.js";
 import type { RalphLoopState, RunLoopOptions } from "./types.js";
 
@@ -124,6 +125,11 @@ function shouldStop(cwd: string): boolean {
 	return state?.cancel_requested === true || state?.stop_requested === true;
 }
 
+function snapshotBundleIteration(cwd: string): void {
+	const bundle = loadRalphBundle(cwd);
+	updateState(cwd, createBundleSnapshot(bundle));
+}
+
 // ── Session-start handler (called from events.ts) ───────────────────────
 /**
  * Called when a new session starts while a Ralph loop is transitioning.
@@ -158,6 +164,9 @@ export function handleLoopSessionStart(
 		session_id: ctx.sessionManager.getSessionId(),
 		last_session_file: ctx.sessionManager.getSessionFile() ?? null,
 	});
+	if (state.bundle_mode) {
+		snapshotBundleIteration(ctx.cwd);
+	}
 
 	// Restore default loader now that the agent is about to process.
 	ctx.ui.setWorkingVisible(true);
@@ -379,9 +388,7 @@ export async function runLoop(
 	const reuseCurrentSession = options.reuseCurrentSession === true;
 	const bundleMode = options.bundleMode === true;
 
-	writeState(
-		cwd,
-		{
+	const initialState: RalphLoopState = {
 			running: true,
 			iteration: startIteration,
 			max_iterations: maxIterations,
@@ -401,9 +408,12 @@ export async function runLoop(
 			progress_size: null,
 			progress_hash: null,
 			source_doc_hashes: null,
-		},
-		task,
-	);
+		};
+
+	writeState(cwd, initialState, task);
+	if (bundleMode) {
+		snapshotBundleIteration(cwd);
+	}
 
 	setCommandCtx(ctx);
 	resetIterationCounters();
@@ -482,6 +492,9 @@ export async function continueLoop(
 		session_id: ctx.sessionManager.getSessionId(),
 		last_session_file: ctx.sessionManager.getSessionFile() ?? null,
 	});
+	if (state.bundle_mode) {
+		snapshotBundleIteration(ctx.cwd);
+	}
 
 	// Send the task.  The command handler returns, then pi processes the message.
 	pi.sendUserMessage(task);
