@@ -130,6 +130,27 @@ function snapshotBundleIteration(cwd: string): void {
 	updateState(cwd, createBundleSnapshot(bundle));
 }
 
+function buildBundleRejectionPrompt(
+	promise: Extract<ControlPromise, "NEXT" | "COMPLETE">,
+	rejection: string,
+): string {
+	return [
+		`Ralph rejected <promise>${promise}</promise>.`,
+		`Failed invariant: ${rejection}.`,
+		"Continue this same iteration. Fix the issue, rerun required verification, update only the appropriate bundle state, and end with exactly one valid promise tag on the last non-empty line.",
+	].join("\n");
+}
+
+function rejectBundlePromise(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	promise: Extract<ControlPromise, "NEXT" | "COMPLETE">,
+	rejection: string,
+): void {
+	ctx.ui.notify(`Ralph rejected <promise>${promise}</promise>: ${rejection}`, "error");
+	pi.sendUserMessage(buildBundleRejectionPrompt(promise, rejection));
+}
+
 // ── Session-start handler (called from events.ts) ───────────────────────
 /**
  * Called when a new session starts while a Ralph loop is transitioning.
@@ -296,7 +317,7 @@ export function handleLoopAgentEnd(
 				rejection = err instanceof Error ? err.message : String(err);
 			}
 			if (rejection) {
-				ctx.ui.notify(`Ralph rejected <promise>COMPLETE</promise>: ${rejection}`, "error");
+				rejectBundlePromise(pi, ctx, "COMPLETE", rejection);
 				return;
 			}
 		}
@@ -331,7 +352,7 @@ export function handleLoopAgentEnd(
 				rejection = err instanceof Error ? err.message : String(err);
 			}
 			if (rejection) {
-				ctx.ui.notify(`Ralph rejected <promise>NEXT</promise>: ${rejection}`, "error");
+				rejectBundlePromise(pi, ctx, "NEXT", rejection);
 				return;
 			}
 		}

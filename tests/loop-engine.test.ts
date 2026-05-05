@@ -236,6 +236,9 @@ test("bundle NEXT rejects zero completed items", async () => {
 	assert.equal(state?.transitioning, false);
 	assert.equal(h.newSessionCalls, 0);
 	assert.match(h.notifications.at(-1)?.message ?? "", /observed 0/);
+	assert.match(h.sentMessages.at(-1) ?? "", /^Ralph rejected <promise>NEXT<\/promise>\./);
+	assert.match(h.sentMessages.at(-1) ?? "", /Failed invariant: exactly one item/);
+	assert.match(h.sentMessages.at(-1) ?? "", /Continue this same iteration/);
 });
 
 test("bundle NEXT rejects multiple completed items", async () => {
@@ -374,6 +377,9 @@ test("bundle COMPLETE rejects unfinished items", async () => {
 	assert.equal(state?.transitioning, false);
 	assert.equal(h.newSessionCalls, 0);
 	assert.match(h.notifications.at(-1)?.message ?? "", /every item/);
+	assert.match(h.sentMessages.at(-1) ?? "", /^Ralph rejected <promise>COMPLETE<\/promise>\./);
+	assert.match(h.sentMessages.at(-1) ?? "", /Failed invariant: COMPLETE requires every item/);
+	assert.match(h.sentMessages.at(-1) ?? "", /Continue this same iteration/);
 });
 
 test("bundle COMPLETE rejects immutable item changes", async () => {
