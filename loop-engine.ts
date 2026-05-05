@@ -4,7 +4,7 @@ import type {
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { randomUUID } from "node:crypto";
-import { createBundleSnapshot, evaluateNextGate, loadRalphBundle } from "./bundle.js";
+import { createBundleSnapshot, evaluateCompleteGate, evaluateNextGate, loadRalphBundle } from "./bundle.js";
 import { getTaskBody, readState, updateState, writeState } from "./state.js";
 import type { RalphLoopState, RunLoopOptions } from "./types.js";
 
@@ -284,6 +284,23 @@ export function handleLoopAgentEnd(
 	const controlPromise = extractControlPromise(assistant);
 
 	if (controlPromise === "COMPLETE") {
+		if (state.bundle_mode) {
+			let rejection: string | null;
+			try {
+				const bundle = loadRalphBundle(cwd);
+				rejection = evaluateCompleteGate(
+					state.bundle_items_snapshot,
+					bundle.items.items,
+				);
+			} catch (err) {
+				rejection = err instanceof Error ? err.message : String(err);
+			}
+			if (rejection) {
+				ctx.ui.notify(`Ralph rejected <promise>COMPLETE</promise>: ${rejection}`, "error");
+				return;
+			}
+		}
+
 		ctx.ui.notify(
 			`Ralph loop complete after ${state.iteration} iterations!`,
 			"info",

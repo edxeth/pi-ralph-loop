@@ -345,6 +345,69 @@ test("agent_end with COMPLETE finalizes the loop", () => {
 	assert.equal(state?.transitioning, false);
 });
 
+test("bundle COMPLETE accepts when every item passes", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [true, false]);
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	writeBundleItems(h.cwd, [true, true]);
+	h.simulateAgentEnd({ text: "All done\n<promise>COMPLETE</promise>" });
+
+	const state = h.readState();
+	assert.equal(state?.running, false);
+	assert.equal(state?.stop_reason, "complete");
+	assert.equal(state?.transitioning, false);
+});
+
+test("bundle COMPLETE rejects unfinished items", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [true, false]);
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	h.simulateAgentEnd({ text: "All done\n<promise>COMPLETE</promise>" });
+
+	const state = h.readState();
+	assert.equal(state?.running, true);
+	assert.equal(state?.stop_reason, null);
+	assert.equal(state?.transitioning, false);
+	assert.equal(h.newSessionCalls, 0);
+	assert.match(h.notifications.at(-1)?.message ?? "", /every item/);
+});
+
+test("bundle COMPLETE rejects immutable item changes", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [true]);
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	writeFileSync(
+		join(h.cwd, ".ralph", "items.json"),
+		JSON.stringify(
+			{
+				version: 1,
+				items: [
+					{
+						category: "changed",
+						description: "Item 1",
+						steps: ["Verify it"],
+						passes: true,
+						regression_notes: "",
+					},
+				],
+			},
+			null,
+			2,
+		),
+	);
+	h.simulateAgentEnd({ text: "All done\n<promise>COMPLETE</promise>" });
+
+	assert.equal(h.readState()?.running, true);
+	assert.equal(h.newSessionCalls, 0);
+	assert.match(h.notifications.at(-1)?.message ?? "", /immutable fields changed/);
+});
+
 test("agent_end stops at max_iterations when NEXT on last iteration", () => {
 	const h = createHarness();
 	h.writeState(

@@ -259,24 +259,24 @@ export function createBundleSnapshot(bundle: RalphBundle): BundleSnapshot {
 	};
 }
 
-export function evaluateNextGate(
-	previousSnapshotJson: string | null,
-	currentItems: BundleItem[],
-): string | null {
+function parseSnapshot(previousSnapshotJson: string | null): ReturnType<typeof snapshotItems> | string {
 	if (!previousSnapshotJson) return "missing pre-iteration item snapshot";
 
-	let previous: ReturnType<typeof snapshotItems>;
 	try {
-		previous = JSON.parse(previousSnapshotJson) as ReturnType<typeof snapshotItems>;
+		return JSON.parse(previousSnapshotJson) as ReturnType<typeof snapshotItems>;
 	} catch {
 		return "invalid pre-iteration item snapshot";
 	}
+}
 
+function evaluateImmutableItems(
+	previous: ReturnType<typeof snapshotItems>,
+	currentItems: BundleItem[],
+): string | null {
 	if (previous.length !== currentItems.length) {
 		return "item count changed during the iteration";
 	}
 
-	let completed = 0;
 	for (let index = 0; index < previous.length; index++) {
 		const before = previous[index];
 		const after = currentItems[index];
@@ -287,11 +287,45 @@ export function evaluateNextGate(
 		) {
 			return `item ${index + 1} immutable fields changed`;
 		}
-		if (!before.passes && after.passes) completed++;
+	}
+
+	return null;
+}
+
+export function evaluateNextGate(
+	previousSnapshotJson: string | null,
+	currentItems: BundleItem[],
+): string | null {
+	const previous = parseSnapshot(previousSnapshotJson);
+	if (typeof previous === "string") return previous;
+
+	const immutableError = evaluateImmutableItems(previous, currentItems);
+	if (immutableError) return immutableError;
+
+	let completed = 0;
+	for (let index = 0; index < previous.length; index++) {
+		if (!previous[index].passes && currentItems[index].passes) completed++;
 	}
 
 	if (completed !== 1) {
 		return `exactly one item must move from passes=false to passes=true; observed ${completed}`;
+	}
+
+	return null;
+}
+
+export function evaluateCompleteGate(
+	previousSnapshotJson: string | null,
+	currentItems: BundleItem[],
+): string | null {
+	const previous = parseSnapshot(previousSnapshotJson);
+	if (typeof previous === "string") return previous;
+
+	const immutableError = evaluateImmutableItems(previous, currentItems);
+	if (immutableError) return immutableError;
+
+	if (currentItems.some((item) => !item.passes)) {
+		return "COMPLETE requires every item to have passes=true";
 	}
 
 	return null;
