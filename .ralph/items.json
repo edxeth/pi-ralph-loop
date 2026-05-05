@@ -164,8 +164,8 @@
         "Verify rejected NEXT remains in the same session and accepted NEXT creates a fresh session.",
         "Report extension bugs separately from TIA/runtime bugs, direct-Pi entrypoint mismatches, and model/provider issues."
       ],
-      "passes": false,
-      "regression_notes": ""
+      "passes": true,
+      "regression_notes": "Live RPC tests now run through explicit tia pi with a temporary PI_CODING_AGENT_DIR, cover accepted and rejected bundle NEXT lifecycles, and passed with nahcrof/deepseek-v4-pro-precision high thinking. Full npm test and npx tsc --noEmit also pass."
     }
   ]
 }

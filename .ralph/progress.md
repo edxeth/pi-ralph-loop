@@ -64,3 +64,9 @@
 - Files changed: README.md, docs/live-e2e-testing.md, .ralph/items.json, .ralph/progress.md.
 - Verification: npm test (pass, 44 passed/2 skipped), npx tsc --noEmit (pass).
 - Next: Run full regression, typecheck, and live Pi smoke validation through explicit tia pi.
+
+## 2026-05-05 19:06 UTC — Run full regression, typecheck, and live Pi smoke validation through explicit tia pi.
+- Decisions: Updated live RPC harness to launch explicit `tia pi` with a temporary `PI_CODING_AGENT_DIR`, copied safe user model config, and added bundle-mode accepted/rejected NEXT smoke coverage.
+- Files changed: tests/live-rpc.test.ts, .ralph/items.json, .ralph/progress.md.
+- Verification: npx tsc --noEmit (pass), npm test (pass, 44 passed/4 skipped), PI_RALPH_TEST_MODEL=nahcrof/deepseek-v4-pro-precision PI_RALPH_TEST_THINKING=high npm run test:live (pass, 4 passed).
+- Next: Bundle validation item is complete; prepare final handoff.
