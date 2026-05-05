@@ -58,3 +58,9 @@
 - Files changed: bundle.ts, loop-engine.ts, tests/loop-engine.test.ts, .ralph/items.json, .ralph/progress.md.
 - Verification: npm test (pass, 44 passed/2 skipped), npx tsc --noEmit (pass).
 - Next: Document the PRD/SPEC to ralph-plan to /ralph-loop workflow and bundle-mode runtime contract.
+
+## 2026-05-05 18:50 UTC — Document the PRD/SPEC to ralph-plan to /ralph-loop workflow and the bundle-mode runtime contract.
+- Decisions: Documented generated-bundle workflow, bundle-mode prompt detection, required files, runtime_contract metadata, NEXT/COMPLETE enforcement, and rejection behavior; noted bundle live lifecycle coverage in live-test docs.
+- Files changed: README.md, docs/live-e2e-testing.md, .ralph/items.json, .ralph/progress.md.
+- Verification: npm test (pass, 44 passed/2 skipped), npx tsc --noEmit (pass).
+- Next: Run full regression, typecheck, and live Pi smoke validation through explicit tia pi.

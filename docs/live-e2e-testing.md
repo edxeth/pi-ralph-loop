@@ -52,6 +52,10 @@ Current live coverage checks that Ralph:
 - completes on `<promise>COMPLETE</promise>`
 - stops on `max_iterations`
 - works through real pi RPC mode with the extension loaded
+- preserves accepted NEXT fresh-session lifecycle in bundle mode
+- keeps rejected bundle NEXT promises in the same session
+
+Bundle-mode live tests use a temporary `PI_CODING_AGENT_DIR` and should be run through the user's real TIA-wrapped entrypoint when validating release behavior. Use explicit `tia pi`, not plain `pi`, for manual integration checks.
 
 ## Manual smoke test
 

@@ -73,6 +73,48 @@ stop_requested: false
 <your task prompt here>
 ```
 
+## Bundle-mode Ralph workflow
+
+Use bundle mode when a plan was generated into `.ralph/` artifacts, usually from PRD/SPEC planning docs:
+
+1. Write or select source planning docs, such as `.pi/plans/prds/<id>.md` and `.pi/plans/specs/<id>.md`.
+2. Run `ralph-plan` to generate the execution bundle: `.ralph/plan.md`, `.ralph/items.json`, `.ralph/prompt.md`, and `.ralph/progress.md`.
+3. Start Ralph with the generated prompt:
+
+```text
+/ralph-loop "@.ralph/prompt.md" --max-iterations=20
+```
+
+Bundle mode is enabled only when the task is a prompt reference to `.ralph/prompt.md`, including `@.ralph/prompt.md` and `@./.ralph/prompt.md`. Other `/ralph-loop` prompts keep the regular non-bundle behavior.
+
+The runtime validates the bundle before starting and rejects unsafe state, including missing required files, malformed `.ralph/items.json`, symlinked required bundle files, and bundle paths that resolve outside the workspace.
+
+### Bundle runtime contract
+
+`.ralph/items.json` is the source of truth for item status. It must contain `version: 1` and a non-empty `items` array where each item has `category`, `description`, `steps`, `passes`, and `regression_notes`.
+
+An optional top-level `runtime_contract` can declare enforcement metadata:
+
+```json
+{
+  "runtime_contract": {
+    "source_docs": [".pi/plans/prds/2c5fc97a.md"],
+    "verification_gates": [
+      { "name": "tests", "command": "npm test" },
+      { "name": "typecheck", "command": "npx tsc --noEmit" }
+    ],
+    "require_progress_append": true,
+    "require_one_item_per_iteration": true,
+    "require_clean_source_docs": true,
+    "require_one_commit_per_iteration": false
+  }
+}
+```
+
+Before each bundle iteration, Ralph snapshots item text/status, `.ralph/progress.md`, configured source docs, and git HEAD. A valid `<promise>NEXT</promise>` is accepted only when exactly one item moves from `passes:false` to `passes:true`, existing item text is unchanged, progress was appended, configured source docs are unchanged, and configured verification gates pass. A valid `<promise>COMPLETE</promise>` additionally requires every item to have `passes:true`.
+
+Rejected NEXT or COMPLETE promises send a corrective prompt in the same session and do not create a fresh session. Accepted NEXT still creates the next fresh Pi session.
+
 ## Documentation
 
 - [Live end-to-end testing with pi](docs/live-e2e-testing.md)

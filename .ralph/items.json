@@ -150,8 +150,8 @@
         "Document what runtime gates enforce and any intentionally deferred gates.",
         "Run documentation-related checks if present."
       ],
-      "passes": false,
-      "regression_notes": ""
+      "passes": true,
+      "regression_notes": "README now documents the PRD/SPEC to ralph-plan to /ralph-loop workflow, bundle-mode detection, required files, runtime_contract metadata, acceptance gates, and rejection behavior."
     },
     {
       "category": "validation",
