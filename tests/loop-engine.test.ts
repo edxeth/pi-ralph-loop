@@ -7,7 +7,7 @@ import test from "node:test";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 import { continueLoop, handleLoopAgentEnd, runLoop } from "../loop-engine.ts";
 import { readState, writeState } from "../state.ts";

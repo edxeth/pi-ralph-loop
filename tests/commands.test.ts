@@ -8,7 +8,7 @@ import test from "node:test";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 import { registerCommands } from "../commands.ts";
 import { readState, writeState } from "../state.ts";

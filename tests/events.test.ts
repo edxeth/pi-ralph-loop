@@ -7,7 +7,7 @@ import test from "node:test";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 import { registerEventHandlers } from "../events.ts";
 import { readState, writeState } from "../state.ts";

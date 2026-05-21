@@ -6,7 +6,7 @@
  * for <promise>COMPLETE</promise> to know when the task is done.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { registerCommands } from "./commands.js";
 import { registerEventHandlers } from "./events.js";

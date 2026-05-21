@@ -19,7 +19,7 @@
 		]
 	},
 	"devDependencies": {
-		"@mariozechner/pi-coding-agent": "^0.73.0",
+		"@earendil-works/pi-coding-agent": "^0.75.4",
 		"@types/node": "^25.6.0",
 		"tsx": "^4.21.0",
 		"typescript": "^6.0.3"

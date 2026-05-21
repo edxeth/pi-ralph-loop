@@ -1,7 +1,7 @@
 import type {
 	ExtensionAPI,
 	ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { handleLoopAgentEnd, handleLoopSessionStart } from "./loop-engine.js";
 import { readState, updateState } from "./state.js";
 

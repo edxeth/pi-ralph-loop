@@ -2,7 +2,7 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { createBundleSnapshot, evaluateBundleFileGate, evaluateCompleteGate, evaluateNextGate, evaluateVerificationGates, loadRalphBundle } from "./bundle.js";
 import { getTaskBody, readState, updateState, writeState } from "./state.js";
