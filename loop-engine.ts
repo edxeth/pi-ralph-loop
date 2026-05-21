@@ -189,8 +189,6 @@ export function handleLoopSessionStart(
 		snapshotBundleIteration(ctx.cwd);
 	}
 
-	// Restore default loader now that the agent is about to process.
-	ctx.ui.setWorkingVisible(true);
 	// Send the task.  The agent is not streaming (command handler returned).
 	pi.sendUserMessage(task);
 }
@@ -269,8 +267,6 @@ export function handleLoopAgentEnd(
 			`Provider error, retrying (attempt ${_providerRetries}/${MAX_ERROR_RETRIES})...`,
 			"warning",
 		);
-		// Hide default loader during silent retry delay.
-		ctx.ui.setWorkingVisible(false);
 		// Retry after a delay.
 		setTimeout(() => pi.sendUserMessage("continue"), ERROR_RETRY_DELAY_MS);
 		return;
@@ -295,8 +291,6 @@ export function handleLoopAgentEnd(
 			`Agent ended without terminal stopReason (likely transient provider failure after tool use); retrying with continue (${_providerRetries}/${MAX_ERROR_RETRIES})...`,
 			"warning",
 		);
-		// Hide default loader during silent retry delay.
-		ctx.ui.setWorkingVisible(false);
 		setTimeout(() => pi.sendUserMessage("continue"), ERROR_RETRY_DELAY_MS);
 		return;
 	}
@@ -371,9 +365,6 @@ export function handleLoopAgentEnd(
 			iteration: state.iteration + 1,
 			transitioning: true,
 		});
-
-		// Hide default loader during silent session transition.
-		ctx.ui.setWorkingVisible(false);
 
 		// Create new session using the stored command context.
 		// This fires session_start → handleLoopSessionStart → sendUserMessage(task).
