@@ -1,167 +1,227 @@
 # pi-ralph-loop
 
-Ralph Wiggum loop extension for [pi](https://github.com/badlogic/pi-mono) — iterative task execution with fresh context windows.
+`pi-ralph-loop` turns Geoffrey Huntley's Ralph Wiggum loop technique into a Pi extension on steroids.
 
-## What It Does
+Ralph, in its purest form, is a bash loop: run a coding agent, let it read the plan, make one useful change, commit, and repeat. That simplicity is the point. Raw bash still leaves you to build the boring parts yourself: resume, stop, status, promise parsing, fresh-session handoff, progress tracking, bundle validation, and safety gates.
 
-Runs a task in a loop, creating a **fresh session** (new context window) for each iteration. This avoids context rot — the degradation LLMs experience as conversation history grows.
+This extension gives Ralph a native Pi runtime. It also ships `ralph-plan-writer`, an opinionated skill that turns a goal, PRD, SPEC, or messy implementation idea into a ready-to-run Ralph plan, aka `.ralph/` bundle.
 
-The loop stops when:
-- The agent outputs `<promise>COMPLETE</promise>`
-- Maximum iterations are reached
-- The user cancels (Ctrl+C or `/ralph-stop`)
+Use the bundled agent skill when you want a Ralph planner out of the box. Use plain `/ralph-loop` when you want to bring your own prompt.
 
-## Commands
+## Install
 
-### `/ralph-loop <task> [--max-iterations=N]`
-
-Start a Ralph loop. The task is sent as a user message at the start of each fresh session.
-
-```
-/ralph-loop "@prd.md Find the FIRST unchecked task, implement it, check it off, commit." --max-iterations=20
+```bash
+pi install git:github.com/edxeth/pi-ralph-loop
 ```
 
-Default max iterations: 100.
+## Why Ralph works
 
-### `/ralph-resume [--force]`
+A coding agent starts each session sharp. It has a local job, a clean prompt, and enough context to move.
 
-Resume a saved loop from `.ralph/loop.md`.
+Then the transcript fills with tool output, failed attempts, old reasoning, stale plans, and half-true assumptions. The model keeps seeing all of it. Past a point, more context makes the next decision worse.
 
-- For failed, cancelled, stopped, or max-iteration runs, `/ralph-resume` works normally.
-- For completed runs, use `/ralph-resume --force`.
-- If you run it from the same session recorded in `session_id`, Ralph resumes that iteration in the current chat by sending `continue`.
-- If you run it from any other session, Ralph restarts the saved iteration in a fresh session using the original task body from `.ralph/loop.md`.
+Ralph exits before that decay dominates. Each iteration does one verified unit of work, writes durable state, commits, and leaves. The next iteration starts fresh and reloads only the facts that survived into files and git history.
 
-### `/ralph-restart`
+That is the trick: throw away live context, keep durable evidence.
 
-Restart the saved loop from iteration 1 in a fresh session, reusing the prompt and `max_iterations` from `.ralph/loop.md` and resetting the other frontmatter fields for a new run.
+## Why this extension exists
 
-### `/ralph-stop`
+A raw Ralph loop can be one shell script. That works until you want to run it overnight.
 
-Stop the loop after the current iteration finishes.
+`pi-ralph-loop` adds the parts AFK runs need:
 
-### `/ralph-status`
+- fresh Pi sessions per iteration
+- `/ralph-stop`, `/ralph-status`, `/ralph-resume`, and `/ralph-restart` commands
+- persisted loop state in `.ralph/loop.md`
+- promise nudges when the agent forgets the final control tag
+- runtime checks for item mutation, progress append, verification gates, commits, and protected source docs
+- the bundled `ralph-plan-writer` skill
 
-Show the current loop status (iteration, elapsed time, errors).
+## Start with the plan writer
 
-## Active Loop Safety
-
-While a loop is running, the extension blocks `/resume`, `/new`, `/fork`, and `/tree` in that pi instance. These commands mutate the active session or branch and can interrupt the loop.
-
-If you want to inspect previous iterations while Ralph keeps running, open a second `pi` instance and browse sessions there.
-
-## State File
-
-Loop state is persisted in `.ralph/loop.md` with YAML frontmatter:
-
-```yaml
----
-running: true
-iteration: 3
-max_iterations: 20
-started_at: "2026-03-02T23:38:07.000Z"
-completed_at: null
-stop_reason: null
-session_id: "abc123"
-last_session_file: "~/.pi/agent/sessions/..."
-error_count: 0
-transitioning: false
-cancel_requested: false
-stop_requested: false
----
-
-<your task prompt here>
+```text
+/skill:ralph-plan-writer Build the execution bundle for this goal: <goal>
 ```
 
-## Bundle-mode Ralph workflow
+The skill writes:
 
-Use bundle mode when a plan was generated into `.ralph/` artifacts, usually from PRD/SPEC planning docs:
+```text
+.ralph/plan.md
+.ralph/items.json
+.ralph/prompt.md
+.ralph/progress.md
+```
 
-1. Write or select source planning docs, such as `.pi/plans/prds/<id>.md` and `.pi/plans/specs/<id>.md`.
-2. Run the bundled skill `/skill:ralph-plan-writer` to generate the execution bundle: `.ralph/plan.md`, `.ralph/items.json`, `.ralph/prompt.md`, and `.ralph/progress.md`.
-3. Start Ralph with the generated prompt:
+Then run:
 
 ```text
 /ralph-loop "@.ralph/prompt.md" --max-iterations=20
 ```
 
-Bundle mode is enabled only when the task is a prompt reference to `.ralph/prompt.md`, including `@.ralph/prompt.md` and `@./.ralph/prompt.md`. Other `/ralph-loop` prompts keep the regular non-bundle behavior.
+The plan writer reads the goal, optional PRD/SPEC files, repo state, git history, verification commands, and system constraints. Then it writes the facts Ralph needs into `.ralph/`.
 
-The runtime validates the bundle before starting and rejects unsafe state, including missing required files, malformed `.ralph/items.json`, symlinked required bundle files, and bundle paths that resolve outside the workspace.
+The repo stays the source of truth. PRDs and SPECs help create the bundle; they do not become another document the runtime agent must keep rereading. If you want a custom loop where the agent reads those files every iteration, write that into your own prompt.
 
-### Bundle runtime contract
+### System preflight
 
-`.ralph/items.json` is the source of truth for item status. It must contain `version: 1` and a non-empty `items` array where each item has `category`, `description`, `steps`, `passes`, and `regression_notes`.
+The plan writer blocks unsafe system-level loops before they start.
 
-An optional top-level `runtime_contract` can declare enforcement metadata:
+For plans that depend on `sudo`, admin, services, installers, GUI permissions, devices, packaging, Windows/WSL boundaries, or unattended verification, it gathers safe facts first. It may inspect the host, shell, package manager, path translation, tool availability, and non-interactive privilege state.
+
+It must not install packages, mutate services, start privileged workflows, or trigger permission dialogs unless you approve that planning action.
+
+If the loop would spin on an unresolved host, permission, or verification blocker, the skill should not write a `.ralph/` bundle.
+
+## Bring your own Ralph prompt
+
+You can skip the plan writer and run your own loop prompt:
+
+```text
+/ralph-loop "@PLAN.md @progress.md Pick one unfinished task, implement it, verify it, update progress, commit, then end with <promise>NEXT</promise>. End with <promise>COMPLETE</promise> when everything is done." --max-iterations=10
+```
+
+Your prompt should tell the agent to:
+
+- read the plan and progress file
+- choose one item
+- make one coherent change
+- run the checks
+- update progress
+- commit
+- end with a promise tag on the last non-empty line
+
+That is enough to Ralph. Bundle mode adds stronger runtime checks.
+
+## Promise tags
+
+Ralph reads the last non-empty line of the assistant response.
+
+| Tag | Meaning |
+| --- | --- |
+| `<promise>NEXT</promise>` | This iteration finished one unit of work. Start the next fresh session. |
+| `<promise>COMPLETE</promise>` | The whole loop is done. Stop successfully. |
+| `<promise>STOP</promise>` | Stop the loop without calling it complete. |
+
+If the agent omits a tag, Ralph nudges it to continue. After repeated misses, Ralph stops with an error instead of looping forever.
+
+## Bundle mode, if you write it yourself
+
+Skip this section if you use `ralph-plan-writer` or a plain `/ralph-loop` prompt.
+
+Bundle mode starts when the task points at `.ralph/prompt.md`, including `@.ralph/prompt.md` and `@./.ralph/prompt.md`. In that mode Ralph validates `.ralph/items.json` instead of trusting the agent's final message alone.
+
+Minimum `.ralph/items.json`:
+
+```json
+{
+  "version": 1,
+  "items": [
+    {
+      "category": "functional",
+      "description": "User-visible behavior to complete.",
+      "steps": ["Run the end-to-end verification."],
+      "passes": false,
+      "regression_notes": ""
+    }
+  ]
+}
+```
+
+Add `runtime_contract` when you want stricter gates:
 
 ```json
 {
   "runtime_contract": {
-    "source_docs": [".pi/plans/prds/2c5fc97a.md"],
     "verification_gates": [
-      { "name": "tests", "command": "npm test" },
-      { "name": "typecheck", "command": "npx tsc --noEmit" }
+      { "name": "tests", "command": "npm test" }
     ],
     "require_progress_append": true,
     "require_one_item_per_iteration": true,
-    "require_clean_source_docs": true,
     "commit_policy": "exactly_one"
   }
 }
 ```
 
-Before each bundle iteration, Ralph snapshots item text/status, `.ralph/progress.md`, configured source docs, and git HEAD. A valid `<promise>NEXT</promise>` is accepted only when exactly one item moves from `passes:false` to `passes:true`, existing item text is unchanged, progress was appended, configured source docs are unchanged, configured verification gates pass, and the configured `commit_policy` passes. Supported commit policies are `none`, `optional`, `exactly_one`, and `at_least_one`. If an iteration starts without a git HEAD, initializing git and creating commits can satisfy `exactly_one` or `at_least_one`. A valid `<promise>COMPLETE</promise>` additionally requires every item to have `passes:true`, protected source docs to stay unchanged, configured verification gates to pass, and commit policy to pass.
+Useful `runtime_contract` fields:
 
-Rejected NEXT or COMPLETE promises send a corrective prompt in the same session and do not create a fresh session. If bundle invariants fail repeatedly in the same iteration, Ralph stops with `stop_reason: "error"` instead of correcting forever. Accepted NEXT resets the rejection count and creates the next fresh Pi session.
+| Field | Effect |
+| --- | --- |
+| `verification_gates` | Commands Ralph runs before accepting `NEXT` or `COMPLETE`. |
+| `require_progress_append` | `NEXT` requires `.ralph/progress.md` to grow. |
+| `require_one_item_per_iteration` | `NEXT` requires exactly one item to move from `passes:false` to `passes:true`. |
+| `commit_policy` | `none`, `optional`, `exactly_one`, or `at_least_one`. |
+| `source_docs` + `require_clean_source_docs` | Optional file-protection gate. Omit unless you want Ralph to reject edits to listed files. |
 
-## Documentation
+With bundle gates enabled, `NEXT` means one item passed and the required checks passed. `COMPLETE` means every item passed and the required checks passed. Rejected promises stay in the same session with a corrective prompt.
 
-- [Live end-to-end testing with pi](docs/live-e2e-testing.md)
+## Commands
 
-## Installation
+### `/ralph-loop <task> [--max-iterations=N]`
 
-The extension is auto-discovered from `~/.pi/agent/extensions/pi-ralph-loop/`.
+Start a loop. Default max iterations: `100`.
 
-Or add to `~/.pi/agent/settings.json`:
+### `/ralph-resume [--force]`
 
-```json
-{
-  "extensions": [
-    "/home/devkit/.pi/agent/extensions/pi-ralph-loop"
-  ]
-}
-```
+Resume the saved loop from `.ralph/loop.md`. Use `--force` to resume a completed run.
 
-## How It Works
+### `/ralph-restart`
 
-1. User runs `/ralph-loop "task" --max-iterations=N`
-2. Ralph persists loop state to `.ralph/loop.md`
-3. Ralph creates a fresh session via `ctx.newSession()`
-4. After the new session starts, Ralph continues the loop directly
-5. The session is named `Ralph loop iteration N/M`
-6. The task is sent via `pi.sendUserMessage(...)`
-7. Ralph waits for completion and reads the assistant control tag
-8. `<promise>NEXT</promise>` advances to the next fresh session
-9. `<promise>COMPLETE</promise>` stops successfully
-10. The loop also stops on max iterations, user cancel, or persistent errors
+Restart the saved loop from iteration 1 with the same prompt and max-iteration limit.
 
-## Testing
+### `/ralph-stop`
+
+Stop after the current iteration finishes.
+
+### `/ralph-status`
+
+Show iteration, elapsed time, and error state.
+
+## Loop state
+
+Ralph writes `.ralph/loop.md`. The YAML frontmatter is runtime state, not a user-authored config file, but these fields help when you inspect or recover a run.
+
+| Field | Meaning |
+| --- | --- |
+| `running` | Whether Ralph considers the loop active. |
+| `iteration` | Current iteration number. |
+| `max_iterations` | Iteration cap from `/ralph-loop`. |
+| `started_at` / `completed_at` | Run timestamps. |
+| `stop_reason` | `complete`, `max_iterations`, `user_cancelled`, `manual_stop`, `error`, or `null`. |
+| `session_id` | Pi session that owns the current iteration. |
+| `last_session_file` | Last known Pi session file. |
+| `error_count` | Provider/session error count. |
+| `transitioning` | Ralph is between sessions. |
+| `cancel_requested` / `stop_requested` | User stop flags. |
+| `bundle_mode` | Whether `.ralph/prompt.md` bundle checks apply. |
+| `loop_token` | Run identity used to avoid stale transitions. |
+| `bundle_*`, `items_*`, `progress_*`, `source_doc_hashes`, `git_head` | Bundle snapshots used to validate promises. |
+| `bundle_rejection_count` | Rejected bundle promises in the current iteration. |
+
+The prompt body lives below the frontmatter. `/ralph-resume` and `/ralph-restart` reuse it.
+
+## Safety
+
+While a loop runs, the extension blocks `/resume`, `/new`, `/fork`, and `/tree` in that Pi instance. Open another Pi instance to inspect old iterations while Ralph keeps running.
+
+Ralph waits through provider retry handling and missing terminal stop reasons instead of advancing early. User aborts stop the loop before the next iteration starts. Stale state resets on startup.
+
+## Development
 
 ```bash
 npm test
 npm run test:live
 ```
 
-- `npm test` covers parser, state persistence, command/event wiring, and loop orchestration.
-- `npm run test:live` runs live RPC integration tests against pi.
-- See [docs/live-e2e-testing.md](docs/live-e2e-testing.md) for the contributor workflow and manual smoke test.
+`npm test` covers parser, state persistence, command/event wiring, bundle gates, and loop orchestration.
 
-## Error Handling
+`npm run test:live` runs live RPC integration tests against Pi. See [docs/live-e2e-testing.md](docs/live-e2e-testing.md) for the live-test workflow.
 
-- **Provider errors**: Ralph waits for Pi's own retry handling and does not inject its own overlapping `continue`; if the error persists, the loop stops safely for inspection and intentional resume
-- **Missing terminal stopReason after tool use**: Handled the same way
-- **User abort (Ctrl+C)**: Loop stops, does not start new iteration
-- **Session shutdown (Ctrl+C×2)**: Loop stops immediately
-- **Session transitions**: Loop state survives Ralph's internal `/new` session hops safely
-- **Stale state**: Detected on startup and reset automatically
+## Credits
+
+- [Geoffrey Huntley](https://github.com/ghuntley), creator of the Ralph Wiggum loop technique
+- [Matt Pocock](https://github.com/mattpocock), author of Ralph workflow guidance
+- [Anthropic](https://github.com/anthropics), long-running-agent harness research
+
+## License
+
+MIT

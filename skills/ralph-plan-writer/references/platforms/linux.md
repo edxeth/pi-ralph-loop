@@ -1,45 +1,34 @@
-# Native Linux planning
+# Linux system preflight
 
-## Planning goals
+Use this reference only when the plan depends on Linux host/runtime setup, packages, services, daemons, devices, display/audio, containers, `sudo`, root, or Linux packaging.
 
-Resolve distro, package manager, privilege, service, and device/runtime assumptions before generating the Ralph bundle.
+## Resolve before writing `.ralph/`
 
-## Questions to resolve during planning
+- Role: execution host, target runtime, verification host, or split topology.
+- Distro/version and package manager.
+- Privilege model: no privilege, `sudo` available, root shell, or pre-provisioned outside the loop.
+- System dependencies: packages, services, daemons, sockets, devices, containers, GPU, audio, display, or kernel features.
+- Verification path that can run unattended.
 
-1. Which distro and version matter for execution and verification?
-2. Is Linux the primary host, the target runtime, or just the backend side of a split topology?
-3. Are `sudo`/root privileges available, unavailable, or to be avoided?
-4. Which package manager is expected: `apt`, `dnf`, `yum`, `pacman`, `zypper`, or something else?
-5. Does the plan depend on system services, `systemd`, sockets, device access, or GUI stacks like X11/Wayland/PulseAudio?
-6. Are there kernel/runtime assumptions such as GPU drivers, ALSA, PulseAudio, Docker, or namespace features?
-7. Is verification local-only, containerized, or CI-driven?
+## Safe probes
 
-## Useful local verification checks
-
-Use only the checks relevant to the planning task.
+Run only probes relevant to the plan.
 
 - `uname -a`
 - `cat /etc/os-release`
+- `id`
 - `command -v sudo`
 - `sudo -n true`
 - `command -v apt dnf yum pacman zypper`
 - `systemctl --version`
-- `id`
 
-## Planning guidance
+## Block the bundle when
 
-- Prefer non-interactive verification paths.
-- If `sudo` is required, determine whether it is already usable non-interactively or whether the loop must avoid it.
-- Distinguish base OS setup from project-local setup.
-- Be explicit about display/audio/device assumptions for desktop or media workflows.
-- Do not add Linux startup checks to `.ralph/prompt.md` unless Linux-specific risk is part of the plan.
+- the loop would need an unknown `sudo` password or interactive privilege prompt
+- required packages, services, devices, containers, display/audio stacks, or drivers are unverified
+- verification requires hardware, daemon state, or root access the loop cannot get unattended
+- setup would mutate the host and the user has not approved that setup path
 
-## What to encode in the Ralph bundle
+## Encode in the bundle
 
-When relevant, make the bundle explicit about:
-- distro/version assumptions
-- package manager commands
-- `sudo` expectations
-- service/process model
-- device/runtime dependencies
-- verification commands and logs required for unattended execution
+Record confirmed distro, package manager, privilege model, system dependencies, service/process model, and unattended verification commands in `.ralph/plan.md`. Add startup checks to `.ralph/prompt.md` only when the runtime agent must revalidate them before working.

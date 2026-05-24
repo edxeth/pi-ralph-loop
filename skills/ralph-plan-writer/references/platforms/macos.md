@@ -1,42 +1,34 @@
-# Native macOS planning
+# macOS system preflight
 
-## Planning goals
+Use this reference only when the plan depends on macOS host/runtime setup, Homebrew, Xcode tools, codesign/notarization, GUI permissions, launchd, app bundles, or Apple runtime constraints.
 
-Resolve macOS-specific tooling, signing, GUI permission, and architecture assumptions before the Ralph loop starts.
+## Resolve before writing `.ralph/`
 
-## Questions to resolve during planning
+- Role: execution host, target runtime, verification host, or split topology.
+- macOS version and CPU architecture.
+- Xcode Command Line Tools, SDK, and Homebrew requirements.
+- Privilege model: no privilege, admin approval, GUI permission, keychain/signing identity, or pre-provisioned outside the loop.
+- Packaging/signing scope: local dev artifact, app bundle, signed app, notarized artifact, installer.
+- Verification path that can run unattended.
 
-1. Is macOS the execution host, the target runtime, or both?
-2. Which macOS version and CPU arch matter: Intel, Apple Silicon, or universal output?
-3. Are Xcode Command Line Tools required and present?
-4. Is Homebrew part of the expected setup?
-5. Are codesign, notarization, keychain access, or Apple developer credentials required?
-6. Does the plan depend on GUI automation, accessibility permissions, launchd agents, or app bundle packaging?
-7. Is the verification path local-only or CI-driven?
+## Safe probes
 
-## Useful local verification checks
-
-Use only the checks relevant to the planning task.
+Run only probes relevant to the plan.
 
 - `sw_vers`
 - `uname -m`
 - `xcode-select -p`
 - `brew --version`
-- `security find-identity -p codesigning -v`
 - `codesign --version`
+- `security find-identity -p codesigning -v`
 
-## Planning guidance
+## Block the bundle when
 
-- Treat codesign/notarization as explicit scope decisions, not implicit assumptions.
-- Be careful with GUI automation and accessibility permissions; unattended loops should not depend on a human approving dialogs mid-run.
-- Distinguish local development packaging from distributable macOS packaging.
-- Encode only the startup checks relevant to the actual macOS constraints in the plan.
+- the loop would need interactive admin, accessibility, screen-recording, automation, keychain, signing, or notarization approval
+- Xcode tools, SDKs, Homebrew packages, signing identities, or Apple credentials are unverified
+- verification depends on GUI dialogs or permission prompts during the loop
+- packaging/distribution requirements are unclear
 
-## What to encode in the Ralph bundle
+## Encode in the bundle
 
-When relevant, make the bundle explicit about:
-- macOS version/arch assumptions
-- Xcode/Homebrew/tooling requirements
-- signing/notarization expectations
-- launchd/accessibility or app-bundle constraints
-- verification commands and logs needed for unattended execution
+Record confirmed macOS version, architecture, tooling, privilege/permission model, signing or packaging scope, and unattended verification commands in `.ralph/plan.md`. Add startup checks to `.ralph/prompt.md` only when the runtime agent must revalidate them before working.

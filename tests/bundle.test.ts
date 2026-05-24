@@ -59,6 +59,34 @@ test("parseBundleItemsJson accepts the generated bundle schema and optional meta
 	]);
 });
 
+test("parseBundleItemsJson accepts distilled-only runtime contracts", () => {
+	const parsed = parseBundleItemsJson(
+		JSON.stringify({
+			version: 1,
+			runtime_contract: {
+				source_docs: [],
+				verification_gates: [],
+				require_progress_append: true,
+				require_one_item_per_iteration: true,
+				commit_policy: "exactly_one",
+			},
+			items: [
+				{
+					category: "distilled-only",
+					description: "Use the generated bundle without rereading source docs.",
+					steps: ["Read .ralph/plan.md", "Complete one item"],
+					passes: false,
+					regression_notes: "",
+				},
+			],
+		}),
+	);
+
+	assert.deepEqual(parsed.runtime_contract?.source_docs, []);
+	assert.equal(parsed.runtime_contract?.require_clean_source_docs, undefined);
+	assert.equal(parsed.runtime_contract?.commit_policy, "exactly_one");
+});
+
 test("parseBundleItemsJson rejects malformed and invalid items.json", () => {
 	assert.throws(() => parseBundleItemsJson("{"), /malformed JSON/);
 	assert.throws(() => parseBundleItemsJson(JSON.stringify({ version: 2, items: [] })), /version must be 1/);

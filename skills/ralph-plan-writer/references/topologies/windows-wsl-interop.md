@@ -1,23 +1,20 @@
-# Windows and WSL cross-boundary planning
+# Windows and WSL interop preflight
 
-## Planning goals
+Use this reference only when the plan crosses Windows and WSL, uses Windows tools from WSL, depends on `wsl.exe`/`wslpath`, touches UNC paths, relies on Windows↔WSL localhost behavior, or needs inherited Windows elevation.
 
-Surface cross-boundary risks during planning so the loop does not discover them too late.
+## Resolve before writing `.ralph/`
 
-## Questions to resolve during planning
+- Ralph execution host: Windows shell, WSL shell, or both.
+- Repo location: Windows drive path, WSL filesystem path, or staged/worktree copies.
+- Authoritative side for build, packaging, tests, app launch, and logs.
+- Path translation rules and artifact locations.
+- Whether Windows tools can run from the current WSL session and working directory.
+- Windows admin model when elevation-sensitive steps exist.
+- Localhost direction: Windows to WSL, WSL to Windows, or both.
 
-1. Where does the Ralph loop run: Windows shell, WSL shell, or both?
-2. Where does the repo live: Windows filesystem, WSL filesystem, or staged copies/worktrees in both?
-3. Which side is the authoritative execution host for builds, packaging, and verification?
-4. Are Windows tools expected to run from a WSL-launched session?
-5. Is Windows admin required? If so, can it be inherited by launching WSL from an already elevated Windows terminal?
-6. Is temporary Windows-side staging allowed to avoid UNC/current-directory issues?
-7. Does verification depend on Windows↔WSL localhost communication?
-8. Is the WSL distro already installed and usable, or must the loop discover/bootstrap it?
+## Safe probes
 
-## Useful local verification checks
-
-Use only the checks relevant to the planning task.
+Run only probes relevant to the plan.
 
 - `command -v cmd.exe`
 - `command -v wslpath`
@@ -25,33 +22,17 @@ Use only the checks relevant to the planning task.
 - `wslpath -w "$PWD"`
 - `cmd.exe /c ver`
 - `cmd.exe /c whoami`
-- PowerShell admin probe:
-  - `'/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe' -NoProfile -ExecutionPolicy Bypass -Command '$id = [Security.Principal.WindowsIdentity]::GetCurrent(); $p = New-Object Security.Principal.WindowsPrincipal($id); [pscustomobject]@{ User = $id.Name; IsAdmin = $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } | ConvertTo-Json -Compress'`
-- Windows admin fallback probe:
-  - `cmd.exe /c "fltmc >nul 2>&1 && echo ADMIN_OK || echo ADMIN_NO"`
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '$PSVersionTable.PSVersion.ToString()'`
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '$id=[Security.Principal.WindowsIdentity]::GetCurrent();$p=New-Object Security.Principal.WindowsPrincipal($id);[pscustomobject]@{User=$id.Name;IsAdmin=$p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)}|ConvertTo-Json -Compress'`
 
-## Key planning risks
+## Block the bundle when
 
-- A WSL repo path usually maps to `\\wsl.localhost\...`, and many Windows tools do not like that as a working directory.
-- A drive-backed Windows staging/worktree may be required for packaging or app execution.
-- Windows processes launched from WSL can inherit the Windows token behind the session; this matters for elevation-sensitive steps.
-- Localhost behavior across Windows and WSL must be verified rather than assumed.
-- Performance and tool behavior differ between WSL filesystem paths and Windows filesystem paths.
+- the repo path maps to UNC and required Windows tools may reject it
+- the plan needs Windows admin but WSL did not inherit an elevated Windows token
+- build/test/package steps cross the boundary without a staging or path strategy
+- localhost behavior matters and no safe connectivity check exists
+- required commands must run on both sides but one side lacks the needed toolchain
 
-## Planning guidance
+## Encode in the bundle
 
-- Explicitly separate execution host, target OS, and verification host in the plan.
-- If Windows elevation matters, ask about it during planning and encode a startup verification check in `.ralph/prompt.md`.
-- Prefer plans that avoid interactive UAC prompts during the loop.
-- If Windows tooling is likely to choke on a UNC path, plan an explicit staging or worktree strategy instead of leaving it implicit.
-- Encode only the cross-boundary checks the runtime agent actually needs.
-
-## What to encode in the Ralph bundle
-
-When relevant, make the bundle explicit about:
-- startup verification of interop tools and elevation
-- Windows↔WSL path translation and staging rules
-- which commands run on which side of the boundary
-- where artifacts and logs should live
-- how localhost connectivity is verified
-- what counts as a blocker vs an assumption in unattended execution
+Record execution side, verification side, staging/worktree strategy, path conversion rules, elevation assumptions, localhost checks, and artifact/log locations in `.ralph/plan.md`. Add startup checks to `.ralph/prompt.md` only for boundary facts the runtime agent must revalidate before working.
