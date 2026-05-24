@@ -29,6 +29,8 @@ export interface RalphLoopState {
 	progress_snapshot: string | null;
 	source_doc_hashes: string | null;
 	bundle_items_snapshot: string | null;
+	git_head: string | null;
+	bundle_rejection_count: number;
 }
 
 /** Parsed arguments from /ralph-loop command */

@@ -178,6 +178,7 @@ async function handleResumeCommand(
 		startedAt: state.started_at || new Date().toISOString(),
 		initialErrorCount: state.error_count,
 		reuseCurrentSession,
+		bundleMode: state.bundle_mode,
 	});
 }
 
@@ -215,6 +216,7 @@ async function handleRestartCommand(
 		startedAt: new Date().toISOString(),
 		initialErrorCount: 0,
 		reuseCurrentSession: false,
+		bundleMode: state.bundle_mode,
 	});
 }
 

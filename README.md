@@ -78,7 +78,7 @@ stop_requested: false
 Use bundle mode when a plan was generated into `.ralph/` artifacts, usually from PRD/SPEC planning docs:
 
 1. Write or select source planning docs, such as `.pi/plans/prds/<id>.md` and `.pi/plans/specs/<id>.md`.
-2. Run `ralph-plan` to generate the execution bundle: `.ralph/plan.md`, `.ralph/items.json`, `.ralph/prompt.md`, and `.ralph/progress.md`.
+2. Run the bundled skill `/skill:ralph-plan-writer` to generate the execution bundle: `.ralph/plan.md`, `.ralph/items.json`, `.ralph/prompt.md`, and `.ralph/progress.md`.
 3. Start Ralph with the generated prompt:
 
 ```text
@@ -106,14 +106,14 @@ An optional top-level `runtime_contract` can declare enforcement metadata:
     "require_progress_append": true,
     "require_one_item_per_iteration": true,
     "require_clean_source_docs": true,
-    "require_one_commit_per_iteration": false
+    "commit_policy": "exactly_one"
   }
 }
 ```
 
-Before each bundle iteration, Ralph snapshots item text/status, `.ralph/progress.md`, configured source docs, and git HEAD. A valid `<promise>NEXT</promise>` is accepted only when exactly one item moves from `passes:false` to `passes:true`, existing item text is unchanged, progress was appended, configured source docs are unchanged, and configured verification gates pass. A valid `<promise>COMPLETE</promise>` additionally requires every item to have `passes:true`.
+Before each bundle iteration, Ralph snapshots item text/status, `.ralph/progress.md`, configured source docs, and git HEAD. A valid `<promise>NEXT</promise>` is accepted only when exactly one item moves from `passes:false` to `passes:true`, existing item text is unchanged, progress was appended, configured source docs are unchanged, configured verification gates pass, and the configured `commit_policy` passes. Supported commit policies are `none`, `optional`, `exactly_one`, and `at_least_one`. If an iteration starts without a git HEAD, initializing git and creating commits can satisfy `exactly_one` or `at_least_one`. A valid `<promise>COMPLETE</promise>` additionally requires every item to have `passes:true`, protected source docs to stay unchanged, configured verification gates to pass, and commit policy to pass.
 
-Rejected NEXT or COMPLETE promises send a corrective prompt in the same session and do not create a fresh session. Accepted NEXT still creates the next fresh Pi session.
+Rejected NEXT or COMPLETE promises send a corrective prompt in the same session and do not create a fresh session. If bundle invariants fail repeatedly in the same iteration, Ralph stops with `stop_reason: "error"` instead of correcting forever. Accepted NEXT resets the rejection count and creates the next fresh Pi session.
 
 ## Documentation
 
@@ -159,8 +159,8 @@ npm run test:live
 
 ## Error Handling
 
-- **Provider errors**: Retried up to 3 times with a "continue" nudge
-- **Missing terminal stopReason after tool use**: Treated as a retryable provider failure and retried up to the same 3-attempt budget with `continue`
+- **Provider errors**: Ralph waits for Pi's own retry handling and does not inject its own overlapping `continue`; if the error persists, the loop stops safely for inspection and intentional resume
+- **Missing terminal stopReason after tool use**: Handled the same way
 - **User abort (Ctrl+C)**: Loop stops, does not start new iteration
 - **Session shutdown (Ctrl+C×2)**: Loop stops immediately
 - **Session transitions**: Loop state survives Ralph's internal `/new` session hops safely

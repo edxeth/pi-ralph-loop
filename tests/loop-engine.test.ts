@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,6 +36,7 @@ type Harness = {
 	notifications: Array<{ message: string; type: string }>;
 	newSessionCalls: number;
 	setSession: (id: string, file: string) => void;
+	setIdle: (value: boolean) => void;
 	readState: () => RalphLoopState | null;
 	writeState: (state: RalphLoopState, task?: string) => void;
 	/** Simulate an agent_end event with the given response. */
@@ -66,8 +68,32 @@ function makeBaseState(
 		progress_snapshot: null,
 		source_doc_hashes: null,
 		bundle_items_snapshot: null,
+		git_head: null,
+		bundle_rejection_count: 0,
 	};
 	return { ...baseState, ...overrides };
+}
+
+function git(root: string, args: string[]): string {
+	return execFileSync("git", args, {
+		cwd: root,
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+	}).trim();
+}
+
+function initGitRepo(root: string): void {
+	git(root, ["init"]);
+	git(root, ["config", "user.email", "ralph@example.test"]);
+	git(root, ["config", "user.name", "Ralph Test"]);
+	writeFileSync(join(root, "baseline.txt"), "baseline\n");
+	git(root, ["add", "baseline.txt"]);
+	git(root, ["commit", "-m", "baseline"]);
+}
+
+function commitAll(root: string, message: string): void {
+	git(root, ["add", "."]);
+	git(root, ["commit", "-m", message]);
 }
 
 function writeBundleItems(
@@ -109,6 +135,7 @@ function createHarness(): Harness {
 	let sessionId = "session-1";
 	let sessionFile = "/sessions/session-1.jsonl";
 	let newSessionCalls = 0;
+	let idle = true;
 
 	const ui = {
 		theme: { fg: (_token: string, text: string) => text },
@@ -140,7 +167,7 @@ function createHarness(): Harness {
 				getSessionId: () => sessionId,
 				getSessionFile: () => sessionFile,
 			},
-			isIdle: () => true,
+			isIdle: () => idle,
 			waitForIdle: async () => {},
 			newSession: async (options?: {
 				withSession?: (ctx: ExtensionCommandContext) => Promise<void>;
@@ -184,6 +211,9 @@ function createHarness(): Harness {
 		setSession(id: string, file: string) {
 			sessionId = id;
 			sessionFile = file;
+		},
+		setIdle(value: boolean) {
+			idle = value;
 		},
 		readState: () => readState(cwd),
 		writeState: (state: RalphLoopState, task = "task") =>
@@ -343,6 +373,122 @@ test("bundle NEXT accepts progress append", async () => {
 	assert.equal(h.newSessionCalls, 1);
 });
 
+test("bundle NEXT rejects missing commit when required", async () => {
+	const h = createHarness();
+	initGitRepo(h.cwd);
+	writeBundleItems(h.cwd, [false], { require_one_commit_per_iteration: true });
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	writeBundleItems(h.cwd, [true], { require_one_commit_per_iteration: true });
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.iteration, 1);
+	assert.equal(h.newSessionCalls, 0);
+	assert.match(h.notifications.at(-1)?.message ?? "", /observed 0/);
+});
+
+test("bundle NEXT accepts exactly one commit when required", async () => {
+	const h = createHarness();
+	initGitRepo(h.cwd);
+	writeBundleItems(h.cwd, [false], { require_one_commit_per_iteration: true });
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	writeBundleItems(h.cwd, [true], { require_one_commit_per_iteration: true });
+	commitAll(h.cwd, "complete item");
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.iteration, 2);
+	await new Promise((r) => setTimeout(r, 600));
+	assert.equal(h.newSessionCalls, 1);
+});
+
+test("bundle NEXT accepts first commit after git init when required", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [false], { require_one_commit_per_iteration: true });
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	git(h.cwd, ["init"]);
+	git(h.cwd, ["config", "user.email", "ralph@example.test"]);
+	git(h.cwd, ["config", "user.name", "Ralph Test"]);
+	writeBundleItems(h.cwd, [true], { require_one_commit_per_iteration: true });
+	commitAll(h.cwd, "complete first item");
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.iteration, 2);
+	await new Promise((r) => setTimeout(r, 600));
+	assert.equal(h.newSessionCalls, 1);
+});
+
+test("bundle NEXT rejects multiple commits when exactly_one is required", async () => {
+	const h = createHarness();
+	initGitRepo(h.cwd);
+	writeBundleItems(h.cwd, [false], { commit_policy: "exactly_one" });
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	writeFileSync(join(h.cwd, "first.txt"), "first\n");
+	commitAll(h.cwd, "first commit");
+	writeBundleItems(h.cwd, [true], { commit_policy: "exactly_one" });
+	commitAll(h.cwd, "second commit");
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.iteration, 1);
+	assert.equal(h.newSessionCalls, 0);
+	assert.match(h.notifications.at(-1)?.message ?? "", /observed 2/);
+});
+
+test("bundle NEXT accepts multiple commits when at_least_one is required", async () => {
+	const h = createHarness();
+	initGitRepo(h.cwd);
+	writeBundleItems(h.cwd, [false], { commit_policy: "at_least_one" });
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	writeFileSync(join(h.cwd, "first.txt"), "first\n");
+	commitAll(h.cwd, "first commit");
+	writeBundleItems(h.cwd, [true], { commit_policy: "at_least_one" });
+	commitAll(h.cwd, "second commit");
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.iteration, 2);
+	await new Promise((r) => setTimeout(r, 600));
+	assert.equal(h.newSessionCalls, 1);
+});
+
+test("bundle NEXT rejects commits when none is required", async () => {
+	const h = createHarness();
+	initGitRepo(h.cwd);
+	writeBundleItems(h.cwd, [false], { commit_policy: "none" });
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	writeBundleItems(h.cwd, [true], { commit_policy: "none" });
+	commitAll(h.cwd, "unexpected commit");
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.iteration, 1);
+	assert.equal(h.newSessionCalls, 0);
+	assert.match(h.notifications.at(-1)?.message ?? "", /no commits are allowed/);
+});
+
+test("bundle NEXT allows any commit count when optional", async () => {
+	const h = createHarness();
+	initGitRepo(h.cwd);
+	writeBundleItems(h.cwd, [false], { commit_policy: "optional" });
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	writeBundleItems(h.cwd, [true], { commit_policy: "optional" });
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.iteration, 2);
+	await new Promise((r) => setTimeout(r, 600));
+	assert.equal(h.newSessionCalls, 1);
+});
+
 test("bundle NEXT rejects source document mutation", async () => {
 	const h = createHarness();
 	mkdirSync(join(h.cwd, "docs"), { recursive: true });
@@ -398,6 +544,30 @@ test("bundle NEXT rejects immutable item changes", async () => {
 	assert.match(h.notifications.at(-1)?.message ?? "", /immutable fields changed/);
 });
 
+test("agent_end with provider error waits without injecting continue", () => {
+	const h = createHarness();
+	h.writeState(makeBaseState({ transitioning: false }));
+
+	h.simulateAgentEnd({ stopReason: "error", text: "partial" });
+
+	assert.equal(h.readState()?.running, true);
+	assert.equal(h.readState()?.stop_reason, null);
+	assert.equal(h.readState()?.error_count, 1);
+	assert.deepEqual(h.sentMessages, []);
+});
+
+test("agent_end without terminal stopReason waits without injecting continue", () => {
+	const h = createHarness();
+	h.writeState(makeBaseState({ transitioning: false }));
+
+	h.simulateAgentEnd({ stopReason: "tool-use", text: "partial" });
+
+	assert.equal(h.readState()?.running, true);
+	assert.equal(h.readState()?.stop_reason, null);
+	assert.equal(h.readState()?.error_count, 1);
+	assert.deepEqual(h.sentMessages, []);
+});
+
 test("agent_end with NEXT advances iteration and requests new session", async () => {
 	const h = createHarness();
 	h.writeState(
@@ -429,14 +599,14 @@ test("agent_end refreshes stored command context after each new session", async 
 	await continueLoop(h.pi, h.ctx);
 
 	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
-	await new Promise((r) => setTimeout(r, 600));
+	await new Promise((r) => setTimeout(r, 1000));
 	assert.equal(h.newSessionCalls, 1);
 
 	h.writeState(
 		makeBaseState({ iteration: 2, max_iterations: 4, transitioning: false }),
 	);
 	h.simulateAgentEnd({ text: "Iteration 2\n<promise>NEXT</promise>" });
-	await new Promise((r) => setTimeout(r, 600));
+	await new Promise((r) => setTimeout(r, 1000));
 
 	assert.equal(h.newSessionCalls, 2);
 	assert.ok(
@@ -459,6 +629,19 @@ test("agent_end with COMPLETE finalizes the loop", () => {
 	assert.equal(state?.transitioning, false);
 });
 
+test("agent_end accepts promise tag at end of final line", () => {
+	const h = createHarness();
+	h.writeState(
+		makeBaseState({ iteration: 2, max_iterations: 3, transitioning: false }),
+	);
+
+	h.simulateAgentEnd({ text: "All items now pass. <promise>COMPLETE</promise>" });
+
+	const state = h.readState();
+	assert.equal(state?.running, false);
+	assert.equal(state?.stop_reason, "complete");
+});
+
 test("bundle COMPLETE accepts when every item passes", async () => {
 	const h = createHarness();
 	writeBundleItems(h.cwd, [true, false]);
@@ -472,6 +655,74 @@ test("bundle COMPLETE accepts when every item passes", async () => {
 	assert.equal(state?.running, false);
 	assert.equal(state?.stop_reason, "complete");
 	assert.equal(state?.transitioning, false);
+});
+
+test("bundle COMPLETE does not require progress append", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [true], { require_progress_append: true });
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	h.simulateAgentEnd({ text: "Already done\n<promise>COMPLETE</promise>" });
+
+	const state = h.readState();
+	assert.equal(state?.running, false);
+	assert.equal(state?.stop_reason, "complete");
+});
+
+test("bundle rejection prompt waits until idle", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [false]);
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	h.setIdle(false);
+	h.simulateAgentEnd({ text: "No item done\n<promise>NEXT</promise>" });
+
+	assert.deepEqual(h.sentMessages, ["task"]);
+	assert.equal(h.readState()?.bundle_rejection_count, 1);
+	h.setIdle(true);
+	await new Promise((r) => setTimeout(r, 300));
+	assert.match(h.sentMessages.at(-1) ?? "", /^Ralph rejected <promise>NEXT<\/promise>/);
+});
+
+test("bundle rejections stop after repeated invariant failures", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [false]);
+	h.writeState(
+		makeBaseState({
+			transitioning: false,
+			bundle_mode: true,
+			bundle_rejection_count: 4,
+		}),
+	);
+
+	await continueLoop(h.pi, h.ctx);
+	h.simulateAgentEnd({ text: "Still not done\n<promise>NEXT</promise>" });
+
+	const state = h.readState();
+	assert.equal(state?.running, false);
+	assert.equal(state?.stop_reason, "error");
+	assert.equal(state?.bundle_rejection_count, 5);
+	assert.equal(h.sentMessages.length, 1);
+});
+
+test("bundle rejection count resets after accepted NEXT", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [false, false]);
+	h.writeState(
+		makeBaseState({
+			transitioning: false,
+			bundle_mode: true,
+			bundle_rejection_count: 2,
+		}),
+	);
+
+	await continueLoop(h.pi, h.ctx);
+	writeBundleItems(h.cwd, [true, false]);
+	h.simulateAgentEnd({ text: "Done\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.bundle_rejection_count, 0);
 });
 
 test("bundle COMPLETE rejects unfinished items", async () => {

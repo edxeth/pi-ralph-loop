@@ -108,6 +108,11 @@ export function readState(cwd: string): RalphLoopState | null {
 				typeof data.bundle_items_snapshot === "string"
 					? data.bundle_items_snapshot
 					: null,
+			git_head: typeof data.git_head === "string" ? data.git_head : null,
+			bundle_rejection_count:
+				typeof data.bundle_rejection_count === "number"
+					? data.bundle_rejection_count
+					: 0,
 		};
 	} catch {
 		return null;
@@ -154,6 +159,8 @@ export function writeState(
 		`progress_snapshot: ${serializeValue(state.progress_snapshot)}`,
 		`source_doc_hashes: ${serializeValue(state.source_doc_hashes)}`,
 		`bundle_items_snapshot: ${serializeValue(state.bundle_items_snapshot)}`,
+		`git_head: ${serializeValue(state.git_head)}`,
+		`bundle_rejection_count: ${serializeValue(state.bundle_rejection_count)}`,
 		"---",
 	].join("\n");
 

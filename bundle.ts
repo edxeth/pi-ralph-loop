@@ -27,12 +27,16 @@ export type VerificationGate = {
 const VERIFICATION_GATE_TIMEOUT_MS = 120_000;
 const VERIFICATION_GATE_OUTPUT_LIMIT = 4_000;
 
+export type CommitPolicy = "none" | "optional" | "exactly_one" | "at_least_one";
+
 export type RuntimeContract = {
 	source_docs?: string[];
 	verification_gates?: VerificationGate[];
 	require_progress_append?: boolean;
 	require_one_item_per_iteration?: boolean;
 	require_clean_source_docs?: boolean;
+	commit_policy?: CommitPolicy;
+	/** @deprecated Use commit_policy instead. */
 	require_one_commit_per_iteration?: boolean;
 };
 
@@ -57,6 +61,7 @@ export type BundleSnapshot = {
 	progress_snapshot: string;
 	source_doc_hashes: string;
 	bundle_items_snapshot: string;
+	git_head: string | null;
 };
 
 function fail(message: string): never {
@@ -135,6 +140,18 @@ function validateRuntimeContract(value: unknown): RuntimeContract {
 			}
 			return { name: gate.name, command: gate.command };
 		});
+	}
+
+	if (value.commit_policy !== undefined) {
+		if (
+			value.commit_policy !== "none" &&
+			value.commit_policy !== "optional" &&
+			value.commit_policy !== "exactly_one" &&
+			value.commit_policy !== "at_least_one"
+		) {
+			fail("runtime_contract.commit_policy must be one of none, optional, exactly_one, at_least_one");
+		}
+		contract.commit_policy = value.commit_policy;
 	}
 
 	for (const key of [
@@ -261,6 +278,7 @@ export function createBundleSnapshot(bundle: RalphBundle): BundleSnapshot {
 		progress_snapshot: Buffer.from(progress, "utf8").toString("base64"),
 		source_doc_hashes: JSON.stringify(sourceHashes),
 		bundle_items_snapshot: JSON.stringify(immutableItems),
+		git_head: gitHead,
 	};
 }
 
@@ -323,6 +341,7 @@ export type BundleFileGateSnapshot = {
 	progress_size: number | null;
 	progress_snapshot: string | null;
 	source_doc_hashes: string | null;
+	git_head?: string | null;
 };
 
 function evaluateProgressAppend(bundle: RalphBundle, snapshot: BundleFileGateSnapshot): string | null {
@@ -363,8 +382,63 @@ function evaluateSourceDocs(bundle: RalphBundle, snapshot: BundleFileGateSnapsho
 	return null;
 }
 
+function getCommitPolicy(contract: RuntimeContract | undefined): CommitPolicy {
+	if (contract?.commit_policy) return contract.commit_policy;
+	return contract?.require_one_commit_per_iteration === true ? "exactly_one" : "optional";
+}
+
+function countIterationCommits(root: string, beforeHead: string | null, afterHead: string | null): number | null {
+	if (afterHead === null) return beforeHead === null ? 0 : null;
+
+	try {
+		const count =
+			beforeHead === null
+				? execFileSync("git", ["rev-list", "--count", afterHead], {
+						cwd: root,
+						encoding: "utf8",
+						stdio: ["ignore", "pipe", "ignore"],
+					}).trim()
+				: execFileSync("git", ["rev-list", "--count", `${beforeHead}..${afterHead}`], {
+						cwd: root,
+						encoding: "utf8",
+						stdio: ["ignore", "pipe", "ignore"],
+					}).trim();
+		return Number.parseInt(count, 10);
+	} catch {
+		return null;
+	}
+}
+
+function evaluateCommitPolicy(bundle: RalphBundle, snapshot: BundleFileGateSnapshot): string | null {
+	const policy = getCommitPolicy(bundle.items.runtime_contract);
+	if (policy === "optional") return null;
+	if (snapshot.git_head === undefined) return "missing pre-iteration git HEAD snapshot";
+
+	const currentHead = readGitHead(bundle.root);
+	const commitCount = countIterationCommits(bundle.root, snapshot.git_head, currentHead);
+	if (commitCount === null || Number.isNaN(commitCount)) {
+		return `could not verify commit policy ${policy} for this iteration`;
+	}
+
+	if (policy === "none" && commitCount !== 0) {
+		return `no commits are allowed for this iteration; observed ${commitCount}`;
+	}
+	if (policy === "exactly_one" && commitCount !== 1) {
+		return `exactly one commit must be created for this iteration; observed ${commitCount}`;
+	}
+	if (policy === "at_least_one" && commitCount < 1) {
+		return `at least one commit must be created for this iteration; observed ${commitCount}`;
+	}
+
+	return null;
+}
+
 export function evaluateBundleFileGate(bundle: RalphBundle, snapshot: BundleFileGateSnapshot): string | null {
-	return evaluateProgressAppend(bundle, snapshot) ?? evaluateSourceDocs(bundle, snapshot);
+	return evaluateProgressAppend(bundle, snapshot) ?? evaluateSourceDocs(bundle, snapshot) ?? evaluateCommitPolicy(bundle, snapshot);
+}
+
+export function evaluateBundleCompleteFileGate(bundle: RalphBundle, snapshot: BundleFileGateSnapshot): string | null {
+	return evaluateSourceDocs(bundle, snapshot) ?? evaluateCommitPolicy(bundle, snapshot);
 }
 
 function capGateOutput(output: unknown): string {

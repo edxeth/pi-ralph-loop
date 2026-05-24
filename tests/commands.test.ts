@@ -43,6 +43,8 @@ function makeCommandsState(
 		progress_snapshot: null,
 		source_doc_hashes: null,
 		bundle_items_snapshot: null,
+		git_head: null,
+		bundle_rejection_count: 0,
 	};
 	return { ...baseState, ...overrides };
 }
@@ -61,6 +63,7 @@ function createCommandsHarness() {
 		sendUserMessage(message: string) {
 			sentMessages.push(message);
 		},
+		setSessionName(_name: string) {},
 	} as unknown as ExtensionAPI;
 
 	registerCommands(pi);
@@ -217,6 +220,44 @@ test("ralph-loop rejects start when active loop state exists", async () => {
 		message: "A Ralph loop is already running",
 		type: "error",
 	});
+});
+
+test("ralph-resume preserves saved bundle mode", async () => {
+	const h = createCommandsHarness();
+	writeValidBundle(h.cwd);
+	writeState(
+		h.cwd,
+		makeCommandsState({
+			running: false,
+			stop_reason: "max_iterations",
+			bundle_mode: true,
+		}),
+		"bundle prompt",
+	);
+
+	await h.commands.get("ralph-resume")?.handler("", h.ctx);
+
+	assert.equal(readState(h.cwd)?.bundle_mode, true);
+	assert.deepEqual(h.sentMessages, ["bundle prompt"]);
+});
+
+test("ralph-restart preserves saved bundle mode", async () => {
+	const h = createCommandsHarness();
+	writeValidBundle(h.cwd);
+	writeState(
+		h.cwd,
+		makeCommandsState({
+			running: false,
+			stop_reason: "max_iterations",
+			bundle_mode: true,
+		}),
+		"bundle prompt",
+	);
+
+	await h.commands.get("ralph-restart")?.handler("", h.ctx);
+
+	assert.equal(readState(h.cwd)?.bundle_mode, true);
+	assert.equal(h.getNewSessionCount(), 1);
 });
 
 test("ralph-stop updates persisted stop state", async () => {

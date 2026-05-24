@@ -27,10 +27,13 @@ type SessionStartHandler = (
 	ctx: ExtensionContext,
 ) => Promise<void>;
 
+type ResourcesDiscoverHandler = () => Promise<{ skillPaths?: string[] }>;
+
 type Harness = {
 	cwd: string;
 	commands: Map<string, CommandDef>;
 	sessionStart: SessionStartHandler;
+	resourcesDiscover: ResourcesDiscoverHandler;
 	sentMessages: string[];
 	notifications: Array<{ message: string; type: string }>;
 	commandCtx: ExtensionCommandContext;
@@ -60,6 +63,8 @@ function makeState(overrides: Partial<RalphLoopState> = {}): RalphLoopState {
 		progress_snapshot: null,
 		source_doc_hashes: null,
 		bundle_items_snapshot: null,
+		git_head: null,
+		bundle_rejection_count: 0,
 	};
 	return { ...baseState, ...overrides };
 }
@@ -106,6 +111,9 @@ function createHarness(): Harness {
 		cwd,
 		commands,
 		sessionStart: events.get("session_start") as SessionStartHandler,
+		resourcesDiscover: events.get(
+			"resources_discover",
+		) as ResourcesDiscoverHandler,
 		sentMessages,
 		notifications,
 		commandCtx: {
@@ -133,6 +141,18 @@ test("extension registers core commands", () => {
 	]) {
 		assert.ok(h.commands.has(name));
 	}
+});
+
+test("extension contributes bundled skills", async () => {
+	const h = createHarness();
+
+	const resources = await h.resourcesDiscover();
+
+	assert.ok(
+		resources.skillPaths?.some((skillPath) =>
+			skillPath.endsWith("pi-ralph-loop/skills"),
+		),
+	);
 });
 
 test("ralph-loop rejects invalid args", async () => {

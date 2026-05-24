@@ -4,12 +4,12 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
-import { createBundleSnapshot, evaluateBundleFileGate, evaluateCompleteGate, evaluateNextGate, evaluateVerificationGates, loadRalphBundle } from "./bundle.js";
+import { createBundleSnapshot, evaluateBundleCompleteFileGate, evaluateBundleFileGate, evaluateCompleteGate, evaluateNextGate, evaluateVerificationGates, loadRalphBundle } from "./bundle.js";
 import { getTaskBody, readState, updateState, writeState } from "./state.js";
 import type { RalphLoopState, RunLoopOptions } from "./types.js";
 
-const MAX_ERROR_RETRIES = 3;
 const MAX_PROMISE_NUDGES = 5;
+const MAX_BUNDLE_REJECTIONS = 5;
 const FINAL_PROMISE_WARNING_NUDGE = [
 	"continue",
 	"Reminder: emit exactly one control tag on the LAST non-empty line when appropriate:",
@@ -17,7 +17,8 @@ const FINAL_PROMISE_WARNING_NUDGE = [
 	"- <promise>COMPLETE</promise> only when ALL tasks are fully done",
 ].join("\n");
 const ITERATION_DELAY_MS = 500;
-const ERROR_RETRY_DELAY_MS = 2000;
+const PROVIDER_ERROR_IDLE_CHECK_MS = 1_000;
+const PROVIDER_ERROR_MAX_WAIT_MS = 180_000;
 
 const TERMINAL_STOP_REASONS = new Set(["stop", "length", "error", "aborted"]);
 
@@ -55,11 +56,9 @@ async function createFreshSession(
 }
 
 // Per-iteration retry counters (reset on each fresh iteration).
-let _providerRetries = 0;
 let _promiseNudges = 0;
 
 function resetIterationCounters(): void {
-	_providerRetries = 0;
 	_promiseNudges = 0;
 }
 
@@ -84,7 +83,7 @@ function extractControlPromise(
 	if (lines.length === 0) return null;
 
 	const match = lines[lines.length - 1].match(
-		/^<promise>(NEXT|COMPLETE|STOP)<\/promise>$/,
+		/<promise>(NEXT|COMPLETE|STOP)<\/promise>$/,
 	);
 	return match ? (match[1] as ControlPromise) : null;
 }
@@ -117,12 +116,45 @@ function finalizeLoop(
 		stop_requested: false,
 	});
 	clearLoopStatus(ctx);
-	setCommandCtx(null);
+	if (getCommandCtx()?.cwd === cwd) {
+		setCommandCtx(null);
+	}
 }
 
 function shouldStop(cwd: string): boolean {
 	const state = readState(cwd);
 	return state?.cancel_requested === true || state?.stop_requested === true;
+}
+
+function scheduleProviderErrorFinalization(
+	ctx: ExtensionContext,
+	cwd: string,
+	loopToken: string,
+	iteration: number,
+	errorCount: number,
+	message: string,
+	startedAt = Date.now(),
+): void {
+	const timeout = setTimeout(() => {
+		const latest = readState(cwd);
+		if (
+			!latest?.running ||
+			latest.loop_token !== loopToken ||
+			latest.iteration !== iteration ||
+			latest.error_count !== errorCount
+		) {
+			return;
+		}
+
+		if (!ctx.isIdle() && Date.now() - startedAt < PROVIDER_ERROR_MAX_WAIT_MS) {
+			scheduleProviderErrorFinalization(ctx, cwd, loopToken, iteration, errorCount, message, startedAt);
+			return;
+		}
+
+		ctx.ui.notify(message, "error");
+		finalizeLoop(ctx, cwd, "error", errorCount);
+	}, PROVIDER_ERROR_IDLE_CHECK_MS);
+	timeout.unref?.();
 }
 
 function snapshotBundleIteration(cwd: string): void {
@@ -141,14 +173,39 @@ function buildBundleRejectionPrompt(
 	].join("\n");
 }
 
+function sendWhenIdle(pi: ExtensionAPI, ctx: ExtensionContext, message: string): void {
+	if (ctx.isIdle()) {
+		pi.sendUserMessage(message);
+		return;
+	}
+	const timeout = setTimeout(() => sendWhenIdle(pi, ctx, message), 250);
+	timeout.unref?.();
+}
+
 function rejectBundlePromise(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
+	state: RalphLoopState,
 	promise: Extract<ControlPromise, "NEXT" | "COMPLETE">,
 	rejection: string,
 ): void {
-	ctx.ui.notify(`Ralph rejected <promise>${promise}</promise>: ${rejection}`, "error");
-	pi.sendUserMessage(buildBundleRejectionPrompt(promise, rejection));
+	const rejectionCount = state.bundle_rejection_count + 1;
+	updateState(ctx.cwd, { bundle_rejection_count: rejectionCount });
+
+	if (rejectionCount >= MAX_BUNDLE_REJECTIONS) {
+		ctx.ui.notify(
+			`Ralph loop failed at iteration ${state.iteration}: bundle invariant rejected ${rejectionCount} times. Last invariant: ${rejection}`,
+			"error",
+		);
+		finalizeLoop(ctx, ctx.cwd, "error", state.error_count);
+		return;
+	}
+
+	ctx.ui.notify(
+		`Ralph rejected <promise>${promise}</promise> (${rejectionCount}/${MAX_BUNDLE_REJECTIONS - 1}): ${rejection}`,
+		"error",
+	);
+	sendWhenIdle(pi, ctx, buildBundleRejectionPrompt(promise, rejection));
 }
 
 // ── Session-start handler (called from events.ts) ───────────────────────
@@ -248,50 +305,41 @@ export function handleLoopAgentEnd(
 		return;
 	}
 
-	// ── Provider error ──
+	// ── Provider/runtime error ──
 	if (stopReason === "error") {
-		_providerRetries++;
 		const errorCount = state.error_count + 1;
 		updateState(cwd, { error_count: errorCount });
-
-		if (_providerRetries > MAX_ERROR_RETRIES) {
-			ctx.ui.notify(
-				`Ralph loop failed after ${state.iteration} iterations: provider error persists after ${MAX_ERROR_RETRIES} retries`,
-				"error",
-			);
-			finalizeLoop(ctx, cwd, "error", errorCount);
-			return;
-		}
-
 		ctx.ui.notify(
-			`Provider error, retrying (attempt ${_providerRetries}/${MAX_ERROR_RETRIES})...`,
+			`Provider error at Ralph iteration ${state.iteration}; waiting for Pi's retry handling before deciding the loop failed.`,
 			"warning",
 		);
-		// Retry after a delay.
-		setTimeout(() => pi.sendUserMessage("continue"), ERROR_RETRY_DELAY_MS);
+		scheduleProviderErrorFinalization(
+			ctx,
+			cwd,
+			state.loop_token,
+			state.iteration,
+			errorCount,
+			`Ralph loop stopped at iteration ${state.iteration}: provider error persisted after waiting for Pi retry handling. Resume after inspecting the partial work.`,
+		);
 		return;
 	}
 
 	// ── Non-terminal stop reason (e.g. missing stopReason after tool use) ──
 	if (!stopReason || !TERMINAL_STOP_REASONS.has(stopReason)) {
-		_providerRetries++;
 		const errorCount = state.error_count + 1;
 		updateState(cwd, { error_count: errorCount });
-
-		if (_providerRetries > MAX_ERROR_RETRIES) {
-			ctx.ui.notify(
-				`Ralph loop failed after ${state.iteration} iterations: agent kept ending without a terminal stopReason after ${MAX_ERROR_RETRIES} retries`,
-				"error",
-			);
-			finalizeLoop(ctx, cwd, "error", errorCount);
-			return;
-		}
-
 		ctx.ui.notify(
-			`Agent ended without terminal stopReason (likely transient provider failure after tool use); retrying with continue (${_providerRetries}/${MAX_ERROR_RETRIES})...`,
+			`Agent ended without terminal stopReason at Ralph iteration ${state.iteration}; waiting for Pi's retry handling before deciding the loop failed.`,
 			"warning",
 		);
-		setTimeout(() => pi.sendUserMessage("continue"), ERROR_RETRY_DELAY_MS);
+		scheduleProviderErrorFinalization(
+			ctx,
+			cwd,
+			state.loop_token,
+			state.iteration,
+			errorCount,
+			`Ralph loop stopped at iteration ${state.iteration}: agent kept ending without a terminal stopReason after waiting for Pi retry handling. Resume after inspecting the partial work.`,
+		);
 		return;
 	}
 
@@ -306,12 +354,12 @@ export function handleLoopAgentEnd(
 				rejection = evaluateCompleteGate(
 					state.bundle_items_snapshot,
 					bundle.items.items,
-				) ?? evaluateBundleFileGate(bundle, state) ?? evaluateVerificationGates(bundle);
+				) ?? evaluateBundleCompleteFileGate(bundle, state) ?? evaluateVerificationGates(bundle);
 			} catch (err) {
 				rejection = err instanceof Error ? err.message : String(err);
 			}
 			if (rejection) {
-				rejectBundlePromise(pi, ctx, "COMPLETE", rejection);
+				rejectBundlePromise(pi, ctx, state, "COMPLETE", rejection);
 				return;
 			}
 		}
@@ -346,7 +394,7 @@ export function handleLoopAgentEnd(
 				rejection = err instanceof Error ? err.message : String(err);
 			}
 			if (rejection) {
-				rejectBundlePromise(pi, ctx, "NEXT", rejection);
+				rejectBundlePromise(pi, ctx, state, "NEXT", rejection);
 				return;
 			}
 		}
@@ -364,6 +412,7 @@ export function handleLoopAgentEnd(
 		updateState(cwd, {
 			iteration: state.iteration + 1,
 			transitioning: true,
+			bundle_rejection_count: 0,
 		});
 
 		// Create new session using the stored command context.
@@ -456,6 +505,8 @@ export async function runLoop(
 			progress_snapshot: null,
 			source_doc_hashes: null,
 			bundle_items_snapshot: null,
+			git_head: null,
+			bundle_rejection_count: 0,
 		};
 
 	writeState(cwd, initialState, task);
