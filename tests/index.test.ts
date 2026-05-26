@@ -10,9 +10,9 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
-import ralphLoopExtension from "../index.ts";
-import { readState, writeState } from "../state.ts";
-import type { RalphLoopState } from "../types.ts";
+import ralphLoopExtension from "../src/index.ts";
+import { readState, writeState } from "../src/state.ts";
+import type { RalphLoopState } from "../src/types.ts";
 
 type CommandDef = {
 	description?: string;

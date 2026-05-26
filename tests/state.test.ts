@@ -4,8 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { getTaskBody, readState, updateState, writeState } from "../state.ts";
-import type { RalphLoopState } from "../types.ts";
+import {
+	getTaskBody,
+	readState,
+	updateState,
+	writeState,
+} from "../src/state.ts";
+import type { RalphLoopState } from "../src/types.ts";
 
 function makeState(): RalphLoopState {
 	return {
@@ -68,10 +73,10 @@ test("old state files parse with default bundle metadata", () => {
 			"running: true",
 			"iteration: 1",
 			"max_iterations: 3",
-			"started_at: \"2026-04-08T00:00:00.000Z\"",
+			'started_at: "2026-04-08T00:00:00.000Z"',
 			"completed_at: null",
 			"stop_reason: null",
-			"session_id: \"session-1\"",
+			'session_id: "session-1"',
 			"last_session_file: null",
 			"error_count: 0",
 			"transitioning: false",

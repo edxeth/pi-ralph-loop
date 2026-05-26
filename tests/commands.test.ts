@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,9 +10,9 @@ import type {
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 
-import { registerCommands } from "../commands.ts";
-import { readState, writeState } from "../state.ts";
-import type { RalphLoopState } from "../types.ts";
+import { registerCommands } from "../src/commands.ts";
+import { readState, writeState } from "../src/state.ts";
+import type { RalphLoopState } from "../src/types.ts";
 
 type CommandDef = {
 	handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> | void;
@@ -147,10 +147,15 @@ test("ralph-loop starts bundle mode for @.ralph/prompt.md", async () => {
 	const h = createCommandsHarness();
 	writeValidBundle(h.cwd);
 	execFileSync("git", ["init"], { cwd: h.cwd, stdio: "ignore" });
-	execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: h.cwd });
+	execFileSync("git", ["config", "user.email", "test@example.com"], {
+		cwd: h.cwd,
+	});
 	execFileSync("git", ["config", "user.name", "Test User"], { cwd: h.cwd });
 	execFileSync("git", ["add", "."], { cwd: h.cwd });
-	execFileSync("git", ["commit", "-m", "initial"], { cwd: h.cwd, stdio: "ignore" });
+	execFileSync("git", ["commit", "-m", "initial"], {
+		cwd: h.cwd,
+		stdio: "ignore",
+	});
 
 	await h.commands
 		.get("ralph-loop")

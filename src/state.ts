@@ -101,9 +101,13 @@ export function readState(cwd: string): RalphLoopState | null {
 			progress_hash:
 				typeof data.progress_hash === "string" ? data.progress_hash : null,
 			progress_snapshot:
-				typeof data.progress_snapshot === "string" ? data.progress_snapshot : null,
+				typeof data.progress_snapshot === "string"
+					? data.progress_snapshot
+					: null,
 			source_doc_hashes:
-				typeof data.source_doc_hashes === "string" ? data.source_doc_hashes : null,
+				typeof data.source_doc_hashes === "string"
+					? data.source_doc_hashes
+					: null,
 			bundle_items_snapshot:
 				typeof data.bundle_items_snapshot === "string"
 					? data.bundle_items_snapshot

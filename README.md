@@ -214,7 +214,7 @@ npm run test:live
 
 `npm test` covers parser, state persistence, command/event wiring, bundle gates, and loop orchestration.
 
-`npm run test:live` runs live RPC integration tests against Pi. See [docs/live-e2e-testing.md](docs/live-e2e-testing.md) for the live-test workflow.
+`npm run test:live` runs live RPC integration tests against Pi. See [tests/live-e2e-testing.md](tests/live-e2e-testing.md) for the live-test workflow.
 
 ## Credits
 

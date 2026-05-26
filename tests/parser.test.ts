@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseArgs } from "../parser.ts";
+import { parseArgs } from "../src/parser.ts";
 
 test("parseArgs parses task and max iterations", () => {
 	assert.deepEqual(parseArgs('"do work" --max-iterations=7'), {

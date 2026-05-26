@@ -8,11 +8,16 @@ import test from "node:test";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
+	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
-import { continueLoop, handleLoopAgentEnd, runLoop } from "../loop-engine.ts";
-import { readState, writeState } from "../state.ts";
-import type { RalphLoopState } from "../types.ts";
+import {
+	continueLoop,
+	handleLoopAgentEnd,
+	runLoop,
+} from "../src/loop-engine.ts";
+import { readState, writeState } from "../src/state.ts";
+import type { RalphLoopState } from "../src/types.ts";
 
 type ScriptedResponse = {
 	stopReason?: string;
@@ -186,7 +191,7 @@ function createHarness(): Harness {
 	const ctx = makeCtx(activeContextVersion);
 
 	// Mock ExtensionContext (same object minus command methods)
-	const eventCtx = ctx as unknown;
+	const eventCtx = ctx as ExtensionContext;
 
 	function simulateAgentEnd(response: ScriptedResponse) {
 		const messages = [
@@ -196,7 +201,7 @@ function createHarness(): Harness {
 				content: [{ type: "text" as const, text: response.text }],
 			},
 		];
-		handleLoopAgentEnd(pi, messages, eventCtx as any);
+		handleLoopAgentEnd(pi, messages, eventCtx);
 	}
 
 	return {
@@ -262,13 +267,17 @@ test("bundle NEXT accepts exactly one completed item", async () => {
 test("bundle NEXT runs configured verification gates", async () => {
 	const h = createHarness();
 	writeBundleItems(h.cwd, [false], {
-		verification_gates: [{ name: "pass", command: "node -e \"process.exit(0)\"" }],
+		verification_gates: [
+			{ name: "pass", command: 'node -e "process.exit(0)"' },
+		],
 	});
 	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
 
 	await continueLoop(h.pi, h.ctx);
 	writeBundleItems(h.cwd, [true], {
-		verification_gates: [{ name: "pass", command: "node -e \"process.exit(0)\"" }],
+		verification_gates: [
+			{ name: "pass", command: 'node -e "process.exit(0)"' },
+		],
 	});
 	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
 
@@ -280,19 +289,32 @@ test("bundle NEXT runs configured verification gates", async () => {
 test("bundle NEXT rejects failed verification gates", async () => {
 	const h = createHarness();
 	writeBundleItems(h.cwd, [false], {
-		verification_gates: [{ name: "fail", command: "node -e \"console.error('bad gate'); process.exit(2)\"" }],
+		verification_gates: [
+			{
+				name: "fail",
+				command: "node -e \"console.error('bad gate'); process.exit(2)\"",
+			},
+		],
 	});
 	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
 
 	await continueLoop(h.pi, h.ctx);
 	writeBundleItems(h.cwd, [true], {
-		verification_gates: [{ name: "fail", command: "node -e \"console.error('bad gate'); process.exit(2)\"" }],
+		verification_gates: [
+			{
+				name: "fail",
+				command: "node -e \"console.error('bad gate'); process.exit(2)\"",
+			},
+		],
 	});
 	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
 
 	assert.equal(h.readState()?.iteration, 1);
 	assert.equal(h.newSessionCalls, 0);
-	assert.match(h.notifications.at(-1)?.message ?? "", /verification gate fail exited with code 2/);
+	assert.match(
+		h.notifications.at(-1)?.message ?? "",
+		/verification gate fail exited with code 2/,
+	);
 	assert.match(h.sentMessages.at(-1) ?? "", /bad gate/);
 });
 
@@ -309,8 +331,14 @@ test("bundle NEXT rejects zero completed items", async () => {
 	assert.equal(state?.transitioning, false);
 	assert.equal(h.newSessionCalls, 0);
 	assert.match(h.notifications.at(-1)?.message ?? "", /observed 0/);
-	assert.match(h.sentMessages.at(-1) ?? "", /^Ralph rejected <promise>NEXT<\/promise>\./);
-	assert.match(h.sentMessages.at(-1) ?? "", /Failed invariant: exactly one item/);
+	assert.match(
+		h.sentMessages.at(-1) ?? "",
+		/^Ralph rejected <promise>NEXT<\/promise>\./,
+	);
+	assert.match(
+		h.sentMessages.at(-1) ?? "",
+		/Failed invariant: exactly one item/,
+	);
 	assert.match(h.sentMessages.at(-1) ?? "", /Continue this same iteration/);
 });
 
@@ -340,7 +368,10 @@ test("bundle NEXT rejects progress rewrite", async () => {
 
 	assert.equal(h.readState()?.iteration, 1);
 	assert.equal(h.newSessionCalls, 0);
-	assert.match(h.notifications.at(-1)?.message ?? "", /previous content as an exact prefix/);
+	assert.match(
+		h.notifications.at(-1)?.message ?? "",
+		/previous content as an exact prefix/,
+	);
 });
 
 test("bundle NEXT rejects missing progress append", async () => {
@@ -509,7 +540,10 @@ test("bundle NEXT rejects source document mutation", async () => {
 
 	assert.equal(h.readState()?.iteration, 1);
 	assert.equal(h.newSessionCalls, 0);
-	assert.match(h.notifications.at(-1)?.message ?? "", /docs\/source\.md changed/);
+	assert.match(
+		h.notifications.at(-1)?.message ?? "",
+		/docs\/source\.md changed/,
+	);
 });
 
 test("bundle NEXT rejects immutable item changes", async () => {
@@ -541,7 +575,10 @@ test("bundle NEXT rejects immutable item changes", async () => {
 
 	assert.equal(h.readState()?.iteration, 1);
 	assert.equal(h.newSessionCalls, 0);
-	assert.match(h.notifications.at(-1)?.message ?? "", /immutable fields changed/);
+	assert.match(
+		h.notifications.at(-1)?.message ?? "",
+		/immutable fields changed/,
+	);
 });
 
 test("agent_end with provider error waits without injecting continue", () => {
@@ -635,7 +672,9 @@ test("agent_end accepts promise tag at end of final line", () => {
 		makeBaseState({ iteration: 2, max_iterations: 3, transitioning: false }),
 	);
 
-	h.simulateAgentEnd({ text: "All items now pass. <promise>COMPLETE</promise>" });
+	h.simulateAgentEnd({
+		text: "All items now pass. <promise>COMPLETE</promise>",
+	});
 
 	const state = h.readState();
 	assert.equal(state?.running, false);
@@ -683,7 +722,10 @@ test("bundle rejection prompt waits until idle", async () => {
 	assert.equal(h.readState()?.bundle_rejection_count, 1);
 	h.setIdle(true);
 	await new Promise((r) => setTimeout(r, 300));
-	assert.match(h.sentMessages.at(-1) ?? "", /^Ralph rejected <promise>NEXT<\/promise>/);
+	assert.match(
+		h.sentMessages.at(-1) ?? "",
+		/^Ralph rejected <promise>NEXT<\/promise>/,
+	);
 });
 
 test("bundle rejections stop after repeated invariant failures", async () => {
@@ -739,15 +781,26 @@ test("bundle COMPLETE rejects unfinished items", async () => {
 	assert.equal(state?.transitioning, false);
 	assert.equal(h.newSessionCalls, 0);
 	assert.match(h.notifications.at(-1)?.message ?? "", /every item/);
-	assert.match(h.sentMessages.at(-1) ?? "", /^Ralph rejected <promise>COMPLETE<\/promise>\./);
-	assert.match(h.sentMessages.at(-1) ?? "", /Failed invariant: COMPLETE requires every item/);
+	assert.match(
+		h.sentMessages.at(-1) ?? "",
+		/^Ralph rejected <promise>COMPLETE<\/promise>\./,
+	);
+	assert.match(
+		h.sentMessages.at(-1) ?? "",
+		/Failed invariant: COMPLETE requires every item/,
+	);
 	assert.match(h.sentMessages.at(-1) ?? "", /Continue this same iteration/);
 });
 
 test("bundle COMPLETE rejects failed verification gates", async () => {
 	const h = createHarness();
 	writeBundleItems(h.cwd, [true], {
-		verification_gates: [{ name: "complete", command: "node -e \"console.error('complete bad'); process.exit(3)\"" }],
+		verification_gates: [
+			{
+				name: "complete",
+				command: "node -e \"console.error('complete bad'); process.exit(3)\"",
+			},
+		],
 	});
 	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
 
@@ -758,7 +811,10 @@ test("bundle COMPLETE rejects failed verification gates", async () => {
 	assert.equal(state?.running, true);
 	assert.equal(state?.stop_reason, null);
 	assert.equal(h.newSessionCalls, 0);
-	assert.match(h.notifications.at(-1)?.message ?? "", /verification gate complete exited with code 3/);
+	assert.match(
+		h.notifications.at(-1)?.message ?? "",
+		/verification gate complete exited with code 3/,
+	);
 	assert.match(h.sentMessages.at(-1) ?? "", /complete bad/);
 });
 
@@ -791,7 +847,10 @@ test("bundle COMPLETE rejects immutable item changes", async () => {
 
 	assert.equal(h.readState()?.running, true);
 	assert.equal(h.newSessionCalls, 0);
-	assert.match(h.notifications.at(-1)?.message ?? "", /immutable fields changed/);
+	assert.match(
+		h.notifications.at(-1)?.message ?? "",
+		/immutable fields changed/,
+	);
 });
 
 test("agent_end stops at max_iterations when NEXT on last iteration", () => {

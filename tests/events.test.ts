@@ -9,9 +9,9 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
-import { registerEventHandlers } from "../events.ts";
-import { readState, writeState } from "../state.ts";
-import type { RalphLoopState } from "../types.ts";
+import { registerEventHandlers } from "../src/events.ts";
+import { readState, writeState } from "../src/state.ts";
+import type { RalphLoopState } from "../src/types.ts";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -40,6 +40,8 @@ function makeEventsState(
 		progress_snapshot: null,
 		source_doc_hashes: null,
 		bundle_items_snapshot: null,
+		git_head: null,
+		bundle_rejection_count: 0,
 	};
 	return { ...baseState, ...overrides };
 }

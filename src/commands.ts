@@ -1,12 +1,11 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 
-import { readFileSync } from "node:fs";
-import path from "node:path";
-
-import { loadRalphBundle } from "./bundle.js";
+import { loadRalphBundle } from "./bundle/index.js";
 import { runLoop } from "./loop-engine.js";
 import { parseArgs } from "./parser.js";
 import { getTaskBody, readState, updateState } from "./state.js";

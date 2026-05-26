@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { loadRalphBundle, parseBundleItemsJson } from "../bundle.ts";
+import { loadRalphBundle, parseBundleItemsJson } from "../src/bundle/index.ts";
 
 function withWorkspace(fn: (root: string) => void): void {
 	const root = mkdtempSync(path.join(tmpdir(), "ralph-bundle-"));
@@ -73,7 +79,8 @@ test("parseBundleItemsJson accepts distilled-only runtime contracts", () => {
 			items: [
 				{
 					category: "distilled-only",
-					description: "Use the generated bundle without rereading source docs.",
+					description:
+						"Use the generated bundle without rereading source docs.",
 					steps: ["Read .ralph/plan.md", "Complete one item"],
 					passes: false,
 					regression_notes: "",
@@ -89,14 +96,28 @@ test("parseBundleItemsJson accepts distilled-only runtime contracts", () => {
 
 test("parseBundleItemsJson rejects malformed and invalid items.json", () => {
 	assert.throws(() => parseBundleItemsJson("{"), /malformed JSON/);
-	assert.throws(() => parseBundleItemsJson(JSON.stringify({ version: 2, items: [] })), /version must be 1/);
-	assert.throws(() => parseBundleItemsJson(JSON.stringify({ version: 1, items: [] })), /non-empty array/);
+	assert.throws(
+		() => parseBundleItemsJson(JSON.stringify({ version: 2, items: [] })),
+		/version must be 1/,
+	);
+	assert.throws(
+		() => parseBundleItemsJson(JSON.stringify({ version: 1, items: [] })),
+		/non-empty array/,
+	);
 	assert.throws(
 		() =>
 			parseBundleItemsJson(
 				JSON.stringify({
 					version: 1,
-					items: [{ category: "x", description: "x", steps: [], passes: false, regression_notes: "" }],
+					items: [
+						{
+							category: "x",
+							description: "x",
+							steps: [],
+							passes: false,
+							regression_notes: "",
+						},
+					],
 				}),
 			),
 		/steps must be a non-empty string array/,
@@ -106,7 +127,15 @@ test("parseBundleItemsJson rejects malformed and invalid items.json", () => {
 			parseBundleItemsJson(
 				JSON.stringify({
 					version: 1,
-					items: [{ category: "x", description: "x", steps: ["x"], passes: "no", regression_notes: "" }],
+					items: [
+						{
+							category: "x",
+							description: "x",
+							steps: ["x"],
+							passes: "no",
+							regression_notes: "",
+						},
+					],
 				}),
 			),
 		/passes must be boolean/,
@@ -134,7 +163,13 @@ test("loadRalphBundle rejects missing required files and unsafe symlinks", () =>
 	withWorkspace((root) => {
 		writeBundle(root);
 		rmSync(path.join(root, ".ralph/prompt.md"));
-		symlinkSync(path.join(root, ".ralph/plan.md"), path.join(root, ".ralph/prompt.md"));
-		assert.throws(() => loadRalphBundle(root), /prompt\.md must not be a symlink/);
+		symlinkSync(
+			path.join(root, ".ralph/plan.md"),
+			path.join(root, ".ralph/prompt.md"),
+		);
+		assert.throws(
+			() => loadRalphBundle(root),
+			/prompt\.md must not be a symlink/,
+		);
 	});
 });

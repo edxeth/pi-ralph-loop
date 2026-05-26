@@ -10,12 +10,12 @@
 	],
 	"license": "MIT",
 	"scripts": {
-		"test": "node --import tsx --test tests/*.test.ts --test-reporter spec",
+		"test": "node --import tsx --test tests/*.test.ts --test-reporter=spec",
 		"test:live": "PI_RALPH_LIVE=1 node --import tsx --test tests/live-rpc.test.ts"
 	},
 	"pi": {
 		"extensions": [
-			"./index.ts"
+			"./src/index.ts"
 		],
 		"skills": [
 			"./skills"

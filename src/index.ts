@@ -6,18 +6,19 @@
  * for <promise>COMPLETE</promise> to know when the task is done.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { registerCommands } from "./commands.js";
 import { registerEventHandlers } from "./events.js";
 
 const extensionDir = dirname(fileURLToPath(import.meta.url));
+const packageDir = dirname(extensionDir);
 
 function registerBundledResources(pi: ExtensionAPI): void {
 	pi.on("resources_discover", async () => ({
-		skillPaths: [join(extensionDir, "skills")],
+		skillPaths: [join(packageDir, "skills")],
 	}));
 }
 

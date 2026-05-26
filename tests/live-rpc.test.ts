@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	cpSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import readline from "node:readline";
@@ -27,11 +34,17 @@ function createTempAgentConfig(base: string, extensionRoot: string): string {
 	const sourceAgentDir = join(homedir(), ".pi", "agent");
 	const settingsPath = join(sourceAgentDir, "settings.json");
 	const settings = existsSync(settingsPath)
-		? JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>
+		? (JSON.parse(readFileSync(settingsPath, "utf8")) as Record<
+				string,
+				unknown
+			>)
 		: {};
 	settings.packages = [`${extensionRoot}/`];
 	settings.permissionLevel = "bypassed";
-	writeFileSync(join(agentDir, "settings.json"), `${JSON.stringify(settings, null, 2)}\n`);
+	writeFileSync(
+		join(agentDir, "settings.json"),
+		`${JSON.stringify(settings, null, 2)}\n`,
+	);
 
 	for (const name of ["models.json", "auth.json"]) {
 		const source = join(sourceAgentDir, name);
@@ -95,7 +108,10 @@ function createRpcHarness(): RpcHarness {
 			throw new Error(`Timed out waiting for state: ${matcher}`);
 		},
 		async waitForFinalState(matcher: RegExp, timeoutMs = 240_000) {
-			return this.waitForState(new RegExp(`running:\\s*false[\\s\\S]*${matcher.source}`), timeoutMs);
+			return this.waitForState(
+				new RegExp(`running:\\s*false[\\s\\S]*${matcher.source}`),
+				timeoutMs,
+			);
 		},
 		async stop() {
 			child.kill("SIGTERM");
@@ -104,36 +120,46 @@ function createRpcHarness(): RpcHarness {
 	};
 }
 
-function writeBundle(workdir: string, prompt = "Reply with exactly one line: <promise>NEXT</promise>"): void {
+function writeBundle(
+	workdir: string,
+	prompt = "Reply with exactly one line: <promise>NEXT</promise>",
+): void {
 	const ralphDir = join(workdir, ".ralph");
 	mkdirSync(ralphDir, { recursive: true });
 	writeFileSync(join(ralphDir, "plan.md"), "# Live bundle plan\n");
 	writeFileSync(join(ralphDir, "prompt.md"), prompt);
 	writeFileSync(join(ralphDir, "progress.md"), "# Live progress\n");
-	writeFileSync(join(ralphDir, "items.json"), `${JSON.stringify({
-		version: 1,
-		runtime_contract: {
-			require_progress_append: true,
-			require_one_item_per_iteration: true,
-			require_clean_source_docs: true,
-		},
-		items: [
+	writeFileSync(
+		join(ralphDir, "items.json"),
+		`${JSON.stringify(
 			{
-				category: "live",
-				description: "Complete the first live bundle item.",
-				steps: ["Mark only this item passing during iteration 1."],
-				passes: false,
-				regression_notes: "",
+				version: 1,
+				runtime_contract: {
+					require_progress_append: true,
+					require_one_item_per_iteration: true,
+					require_clean_source_docs: true,
+				},
+				items: [
+					{
+						category: "live",
+						description: "Complete the first live bundle item.",
+						steps: ["Mark only this item passing during iteration 1."],
+						passes: false,
+						regression_notes: "",
+					},
+					{
+						category: "live",
+						description: "Complete the second live bundle item.",
+						steps: ["Mark only this item passing during iteration 2."],
+						passes: false,
+						regression_notes: "",
+					},
+				],
 			},
-			{
-				category: "live",
-				description: "Complete the second live bundle item.",
-				steps: ["Mark only this item passing during iteration 2."],
-				passes: false,
-				regression_notes: "",
-			},
-		],
-	}, null, 2)}\n`);
+			null,
+			2,
+		)}\n`,
+	);
 }
 
 test("live pi through tia: NEXT advances and COMPLETE stops", {
@@ -173,13 +199,23 @@ test("live pi through tia: accepted bundle NEXT creates a fresh session", {
 	try {
 		writeBundle(h.workdir);
 		h.sendPrompt('/ralph-loop "@.ralph/prompt.md" --max-iterations=3');
-		await h.waitForState(/running:\s*true[\s\S]*iteration:\s*1[\s\S]*transitioning:\s*false/);
+		await h.waitForState(
+			/running:\s*true[\s\S]*iteration:\s*1[\s\S]*transitioning:\s*false/,
+		);
 		const itemsPath = join(h.workdir, ".ralph", "items.json");
-		const items = JSON.parse(readFileSync(itemsPath, "utf8")) as { items: Array<{ passes: boolean }> };
+		const items = JSON.parse(readFileSync(itemsPath, "utf8")) as {
+			items: Array<{ passes: boolean }>;
+		};
 		items.items[0].passes = true;
 		writeFileSync(itemsPath, `${JSON.stringify(items, null, 2)}\n`);
-		writeFileSync(join(h.workdir, ".ralph", "progress.md"), "# Live progress\n- Test harness completed first item.\n");
-		const state = await h.waitForState(/running:\s*true[\s\S]*iteration:\s*2[\s\S]*transitioning:\s*false/, 360_000);
+		writeFileSync(
+			join(h.workdir, ".ralph", "progress.md"),
+			"# Live progress\n- Test harness completed first item.\n",
+		);
+		const state = await h.waitForState(
+			/running:\s*true[\s\S]*iteration:\s*2[\s\S]*transitioning:\s*false/,
+			360_000,
+		);
 		assert.match(state, /last_session_file:\s*".*\.jsonl"/);
 	} finally {
 		await h.stop();
@@ -193,10 +229,18 @@ test("live pi through tia: rejected bundle NEXT stays in the same session", {
 	try {
 		writeBundle(h.workdir);
 		h.sendPrompt('/ralph-loop "@.ralph/prompt.md" --max-iterations=2');
-		await h.waitForState(/running:\s*true[\s\S]*iteration:\s*1[\s\S]*transitioning:\s*false/);
-		writeFileSync(join(h.workdir, ".ralph", "progress.md"), "# Live progress\n- Test harness appended progress without item completion.\n");
+		await h.waitForState(
+			/running:\s*true[\s\S]*iteration:\s*1[\s\S]*transitioning:\s*false/,
+		);
+		writeFileSync(
+			join(h.workdir, ".ralph", "progress.md"),
+			"# Live progress\n- Test harness appended progress without item completion.\n",
+		);
 		await new Promise((resolve) => setTimeout(resolve, 15_000));
-		const state = await h.waitForState(/running:\s*true[\s\S]*iteration:\s*1[\s\S]*transitioning:\s*false/, 1_000);
+		const state = await h.waitForState(
+			/running:\s*true[\s\S]*iteration:\s*1[\s\S]*transitioning:\s*false/,
+			1_000,
+		);
 		assert.doesNotMatch(state, /iteration:\s*2/);
 	} finally {
 		await h.stop();
