@@ -37,6 +37,7 @@ function makeState(): RalphLoopState {
 		bundle_items_snapshot: null,
 		git_head: null,
 		bundle_rejection_count: 0,
+		limit_reminders: null,
 	};
 }
 
@@ -101,5 +102,6 @@ test("old state files parse with default bundle metadata", () => {
 	assert.equal(state?.source_doc_hashes, null);
 	assert.equal(state?.git_head, null);
 	assert.equal(state?.bundle_rejection_count, 0);
+	assert.equal(state?.limit_reminders, null);
 	assert.equal(getTaskBody(cwd), "legacy task");
 });

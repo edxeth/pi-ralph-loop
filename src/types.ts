@@ -31,6 +31,7 @@ export interface RalphLoopState {
 	bundle_items_snapshot: string | null;
 	git_head: string | null;
 	bundle_rejection_count: number;
+	limit_reminders: string | null;
 }
 
 /** Parsed arguments from /ralph-loop command */

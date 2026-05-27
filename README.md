@@ -8,13 +8,22 @@ This extension gives Ralph a native Pi runtime. It also ships `ralph-plan-writer
 
 Use the bundled agent skill when you want a Ralph planner out of the box. Use plain `/ralph-loop` when you want to bring your own prompt.
 
+## 🌐 **Join the Community**
+
+> [!NOTE]
+> **Building with AI doesn’t have to be a solo grind.**  
+> Join our Discord community to meet other people exploring the latest models, tools, workflows, and ideas: **https://discord.gg/whhrDtCrSS**
+>
+> We talk about what’s new, what’s useful, and what’s actually worth paying attention to in AI.  
+> *And if you want more than conversation,* members also get access to **heavily discounted AI products and services** — including deals on tools like **ChatGPT Plus** and more for just a few dollars.
+
 ## Install
 
 ```bash
 pi install git:github.com/edxeth/pi-ralph-loop
 ```
 
-## Why Ralph works
+## Why Ralph Wiggum loop works
 
 A coding agent starts each session sharp. It has a local job, a clean prompt, and enough context to move.
 
@@ -196,6 +205,7 @@ Ralph writes `.ralph/loop.md`. The YAML frontmatter is runtime state, not a user
 | `loop_token` | Run identity used to avoid stale transitions. |
 | `bundle_*`, `items_*`, `progress_*`, `source_doc_hashes`, `git_head` | Bundle snapshots used to validate promises. |
 | `bundle_rejection_count` | Rejected bundle promises in the current iteration. |
+| `limit_reminders` | Context-limit reminder thresholds already sent in the current iteration. |
 
 The prompt body lives below the frontmatter. `/ralph-resume` and `/ralph-restart` reuse it.
 
@@ -204,6 +214,8 @@ The prompt body lives below the frontmatter. `/ralph-resume` and `/ralph-restart
 While a loop runs, the extension blocks `/resume`, `/new`, `/fork`, and `/tree` in that Pi instance. Open another Pi instance to inspect old iterations while Ralph keeps running.
 
 Ralph waits through provider retry handling and missing terminal stop reasons instead of advancing early. User aborts stop the loop before the next iteration starts. Stale state resets on startup.
+
+When a running iteration reaches 75%, 80%, and 85% of the active model context window, Ralph sends a hidden `ralph_limit` Pi custom message reminding the agent to preserve the original instructions and use the existing `NEXT` or `COMPLETE` promise contract when appropriate. Set `RALPH_LIMIT_REMINDERS_DISABLED=1` to opt out.
 
 ## Development
 

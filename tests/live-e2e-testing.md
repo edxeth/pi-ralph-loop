@@ -55,7 +55,7 @@ Current live coverage checks that Ralph:
 - preserves accepted NEXT fresh-session lifecycle in bundle mode
 - keeps rejected bundle NEXT promises in the same session
 
-Bundle-mode live tests use a temporary `PI_CODING_AGENT_DIR` and should be run through the user's real TIA-wrapped entrypoint when validating release behavior. Use explicit `tia pi`, not plain `pi`, for manual integration checks.
+Bundle-mode live tests use a temporary `PI_CODING_AGENT_DIR` and run the local `pi` executable in RPC mode.
 
 ## Manual smoke test
 

@@ -14,6 +14,7 @@ import type {
 import {
 	continueLoop,
 	handleLoopAgentEnd,
+	handleLoopTurnEnd,
 	runLoop,
 } from "../src/loop-engine.ts";
 import { readState, writeState } from "../src/state.ts";
@@ -38,10 +39,17 @@ type Harness = {
 	pi: ExtensionAPI;
 	ctx: ExtensionCommandContext;
 	sentMessages: string[];
+	customMessages: Array<{
+		customType: string;
+		content?: unknown;
+		display?: boolean;
+		options?: { deliverAs?: string; triggerTurn?: boolean };
+	}>;
 	notifications: Array<{ message: string; type: string }>;
 	newSessionCalls: number;
 	setSession: (id: string, file: string) => void;
 	setIdle: (value: boolean) => void;
+	setContextPercent: (value: number | null | undefined) => void;
 	readState: () => RalphLoopState | null;
 	writeState: (state: RalphLoopState, task?: string) => void;
 	/** Simulate an agent_end event with the given response. */
@@ -75,6 +83,7 @@ function makeBaseState(
 		bundle_items_snapshot: null,
 		git_head: null,
 		bundle_rejection_count: 0,
+		limit_reminders: null,
 	};
 	return { ...baseState, ...overrides };
 }
@@ -134,6 +143,7 @@ function createHarness(): Harness {
 	const cwd = mkdtempSync(join(tmpdir(), "ralph-loop-"));
 	const branch: MockAssistantEntry[] = [];
 	const sentMessages: string[] = [];
+	const customMessages: Harness["customMessages"] = [];
 	const notifications: Array<{ message: string; type: string }> = [];
 	const statusUpdates: Array<{ key: string; value: string | undefined }> = [];
 	const sessionNames: string[] = [];
@@ -141,6 +151,7 @@ function createHarness(): Harness {
 	let sessionFile = "/sessions/session-1.jsonl";
 	let newSessionCalls = 0;
 	let idle = true;
+	let contextPercent: number | null | undefined;
 
 	const ui = {
 		theme: { fg: (_token: string, text: string) => text },
@@ -156,6 +167,16 @@ function createHarness(): Harness {
 	const pi = {
 		sendUserMessage(message: string) {
 			sentMessages.push(message);
+		},
+		sendMessage(
+			message: {
+				customType: string;
+				content?: unknown;
+				display?: boolean;
+			},
+			options?: { deliverAs?: string; triggerTurn?: boolean },
+		) {
+			customMessages.push({ ...message, options });
 		},
 		setSessionName(name: string) {
 			sessionNames.push(name);
@@ -173,6 +194,14 @@ function createHarness(): Harness {
 				getSessionFile: () => sessionFile,
 			},
 			isIdle: () => idle,
+			getContextUsage: () =>
+				contextPercent === undefined
+					? undefined
+					: {
+							tokens: contextPercent === null ? null : contextPercent * 1_000,
+							contextWindow: 100_000,
+							percent: contextPercent,
+						},
 			waitForIdle: async () => {},
 			newSession: async (options?: {
 				withSession?: (ctx: ExtensionCommandContext) => Promise<void>;
@@ -209,6 +238,7 @@ function createHarness(): Harness {
 		pi,
 		ctx,
 		sentMessages,
+		customMessages,
 		notifications,
 		get newSessionCalls() {
 			return newSessionCalls;
@@ -219,6 +249,9 @@ function createHarness(): Harness {
 		},
 		setIdle(value: boolean) {
 			idle = value;
+		},
+		setContextPercent(value: number | null | undefined) {
+			contextPercent = value;
 		},
 		readState: () => readState(cwd),
 		writeState: (state: RalphLoopState, task = "task") =>
@@ -579,6 +612,84 @@ test("bundle NEXT rejects immutable item changes", async () => {
 		h.notifications.at(-1)?.message ?? "",
 		/immutable fields changed/,
 	);
+});
+
+test("turn_end at 75 percent sends hidden Ralph limit reminder", () => {
+	const h = createHarness();
+	h.writeState(makeBaseState({ transitioning: false }));
+	h.setContextPercent(75);
+
+	handleLoopTurnEnd(h.pi, h.ctx);
+
+	assert.equal(h.customMessages.length, 1);
+	assert.equal(h.customMessages[0].customType, "ralph_limit");
+	assert.equal(h.customMessages[0].display, false);
+	assert.equal(h.customMessages[0].options?.deliverAs, "steer");
+	assert.equal(
+		h.customMessages[0].content,
+		"This Pi session is getting long and approaching its context limit. Keep following the original instructions. When a valid promise is appropriate, use <promise>NEXT</promise> or <promise>COMPLETE</promise> according to those instructions.",
+	);
+});
+
+test("turn_end sends each Ralph limit reminder once", () => {
+	const h = createHarness();
+	h.writeState(makeBaseState({ transitioning: false }));
+	h.setContextPercent(75);
+
+	handleLoopTurnEnd(h.pi, h.ctx);
+	handleLoopTurnEnd(h.pi, h.ctx);
+	h.setContextPercent(80);
+	handleLoopTurnEnd(h.pi, h.ctx);
+	handleLoopTurnEnd(h.pi, h.ctx);
+	h.setContextPercent(85);
+	handleLoopTurnEnd(h.pi, h.ctx);
+	handleLoopTurnEnd(h.pi, h.ctx);
+
+	assert.equal(h.customMessages.length, 3);
+	assert.equal(
+		h.customMessages[1].content,
+		"This Pi session has little context room left. Keep following the original instructions. When a valid promise is appropriate, use <promise>NEXT</promise> or <promise>COMPLETE</promise> according to those instructions.",
+	);
+	assert.equal(
+		h.customMessages[2].content,
+		"This Pi session is almost out of context room. Keep following the original instructions. When a valid promise is appropriate, use <promise>NEXT</promise> or <promise>COMPLETE</promise> according to those instructions.",
+	);
+});
+
+test("turn_end respects Ralph limit reminder opt-out", () => {
+	const h = createHarness();
+	h.writeState(makeBaseState({ transitioning: false }));
+	h.setContextPercent(85);
+	const previousValue = process.env.RALPH_LIMIT_REMINDERS_DISABLED;
+	process.env.RALPH_LIMIT_REMINDERS_DISABLED = "1";
+
+	try {
+		handleLoopTurnEnd(h.pi, h.ctx);
+	} finally {
+		if (previousValue === undefined) {
+			delete process.env.RALPH_LIMIT_REMINDERS_DISABLED;
+		} else {
+			process.env.RALPH_LIMIT_REMINDERS_DISABLED = previousValue;
+		}
+	}
+
+	assert.equal(h.customMessages.length, 0);
+});
+
+test("turn_end skips Ralph limit reminder after terminal promise", () => {
+	const h = createHarness();
+	h.writeState(makeBaseState({ transitioning: false }));
+	h.setContextPercent(85);
+
+	handleLoopTurnEnd(h.pi, h.ctx, {
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text: "<promise>COMPLETE</promise>" }],
+		},
+		toolResults: [],
+	});
+
+	assert.equal(h.customMessages.length, 0);
 });
 
 test("agent_end with provider error waits without injecting continue", () => {

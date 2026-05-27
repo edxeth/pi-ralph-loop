@@ -117,6 +117,8 @@ export function readState(cwd: string): RalphLoopState | null {
 				typeof data.bundle_rejection_count === "number"
 					? data.bundle_rejection_count
 					: 0,
+			limit_reminders:
+				typeof data.limit_reminders === "string" ? data.limit_reminders : null,
 		};
 	} catch {
 		return null;
@@ -165,6 +167,7 @@ export function writeState(
 		`bundle_items_snapshot: ${serializeValue(state.bundle_items_snapshot)}`,
 		`git_head: ${serializeValue(state.git_head)}`,
 		`bundle_rejection_count: ${serializeValue(state.bundle_rejection_count)}`,
+		`limit_reminders: ${serializeValue(state.limit_reminders)}`,
 		"---",
 	].join("\n");
 

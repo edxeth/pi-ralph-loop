@@ -30,6 +30,27 @@ const FINAL_PROMISE_WARNING_NUDGE = [
 const ITERATION_DELAY_MS = 500;
 const PROVIDER_ERROR_IDLE_CHECK_MS = 1_000;
 const PROVIDER_ERROR_MAX_WAIT_MS = 180_000;
+const LIMIT_REMINDER_OPT_OUT_ENV = "RALPH_LIMIT_REMINDERS_DISABLED";
+const LIMIT_REMINDERS = [
+	{
+		id: "75",
+		percent: 75,
+		message:
+			"This Pi session is getting long and approaching its context limit. Keep following the original instructions. When a valid promise is appropriate, use <promise>NEXT</promise> or <promise>COMPLETE</promise> according to those instructions.",
+	},
+	{
+		id: "80",
+		percent: 80,
+		message:
+			"This Pi session has little context room left. Keep following the original instructions. When a valid promise is appropriate, use <promise>NEXT</promise> or <promise>COMPLETE</promise> according to those instructions.",
+	},
+	{
+		id: "85",
+		percent: 85,
+		message:
+			"This Pi session is almost out of context room. Keep following the original instructions. When a valid promise is appropriate, use <promise>NEXT</promise> or <promise>COMPLETE</promise> according to those instructions.",
+	},
+] as const;
 
 const TERMINAL_STOP_REASONS = new Set(["stop", "length", "error", "aborted"]);
 
@@ -204,8 +225,55 @@ function handleNextPromise(
 		iteration: state.iteration + 1,
 		transitioning: true,
 		bundle_rejection_count: 0,
+		limit_reminders: null,
 	});
 	scheduleNextIteration(ctx, state);
+}
+
+function areLimitRemindersDisabled(): boolean {
+	const value = process.env[LIMIT_REMINDER_OPT_OUT_ENV];
+	return value !== undefined && value !== "" && value !== "0";
+}
+
+export function handleLoopTurnEnd(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	event?: {
+		message?: { role?: string; content?: unknown };
+		toolResults?: unknown[];
+	},
+): void {
+	if (areLimitRemindersDisabled()) return;
+	if (extractControlPromise(event?.message ?? null)) return;
+
+	const state = readState(ctx.cwd);
+	if (!state?.running || state.transitioning) return;
+
+	const usage = ctx.getContextUsage();
+	const usagePercent = usage?.percent;
+	if (usagePercent === undefined || usagePercent === null) return;
+
+	const sent = new Set(
+		(state.limit_reminders ?? "")
+			.split(",")
+			.map((id) => id.trim())
+			.filter(Boolean),
+	);
+	const reminder = LIMIT_REMINDERS.find(
+		(candidate) => usagePercent >= candidate.percent && !sent.has(candidate.id),
+	);
+	if (!reminder) return;
+
+	sent.add(reminder.id);
+	updateState(ctx.cwd, { limit_reminders: Array.from(sent).join(",") });
+	pi.sendMessage(
+		{
+			customType: "ralph_limit",
+			content: reminder.message,
+			display: false,
+		},
+		{ deliverAs: "steer" },
+	);
 }
 
 function handleMissingPromise(
@@ -396,6 +464,7 @@ export async function runLoop(
 		bundle_items_snapshot: null,
 		git_head: null,
 		bundle_rejection_count: 0,
+		limit_reminders: null,
 	};
 
 	writeState(cwd, initialState, task);

@@ -16,7 +16,6 @@ import test from "node:test";
 const SHOULD_RUN = process.env.PI_RALPH_LIVE === "1";
 const MODEL = process.env.PI_RALPH_TEST_MODEL ?? "ccs-openai-alt/gpt-5.4-mini";
 const THINKING = process.env.PI_RALPH_TEST_THINKING ?? "medium";
-const TIA_BIN = process.env.PI_RALPH_TIA_BIN ?? "tia";
 
 type RpcHarness = {
 	workdir: string;
@@ -56,7 +55,7 @@ function createTempAgentConfig(base: string, extensionRoot: string): string {
 
 function createRpcHarness(): RpcHarness {
 	const root = process.cwd();
-	const extPath = resolve(root, "index.ts");
+	const extPath = resolve(root, "src", "index.ts");
 	const base = mkdtempSync(join(tmpdir(), "ralph-live-"));
 	const workdir = join(base, "work");
 	const sessionDir = join(base, "sessions");
@@ -66,9 +65,8 @@ function createRpcHarness(): RpcHarness {
 	mkdirSync(sessionDir, { recursive: true });
 
 	const child = spawn(
-		TIA_BIN,
+		"pi",
 		[
-			"pi",
 			"--mode",
 			"rpc",
 			"--extension",
@@ -162,22 +160,22 @@ function writeBundle(
 	);
 }
 
-test("live pi through tia: NEXT advances and COMPLETE stops", {
+test("live pi RPC: NEXT advances and COMPLETE stops", {
 	skip: !SHOULD_RUN,
 }, async () => {
 	const h = createRpcHarness();
 	try {
 		h.sendPrompt(
-			'/ralph-loop "Read .ralph/loop.md to get the current iteration number from frontmatter. If iteration is less than 2, reply with exactly two lines: Iteration <n> and <promise>NEXT</promise>. Otherwise reply with exactly two lines: Iteration <n> and <promise>COMPLETE</promise>. Do not use code fences." --max-iterations=3',
+			'/ralph-loop "Read .ralph/loop.md to get the current iteration number from frontmatter. If iteration is less than 3, reply with exactly two lines: Iteration <n> and <promise>NEXT</promise>. Otherwise reply with exactly two lines: Iteration <n> and <promise>COMPLETE</promise>. Do not use code fences." --max-iterations=4',
 		);
 		const state = await h.waitForFinalState(/stop_reason:\s*"complete"/);
-		assert.match(state, /iteration:\s*2/);
+		assert.match(state, /iteration:\s*3/);
 	} finally {
 		await h.stop();
 	}
 });
 
-test("live pi through tia: NEXT on last iteration stops at max_iterations", {
+test("live pi RPC: NEXT on last iteration stops at max_iterations", {
 	skip: !SHOULD_RUN,
 }, async () => {
 	const h = createRpcHarness();
@@ -192,7 +190,7 @@ test("live pi through tia: NEXT on last iteration stops at max_iterations", {
 	}
 });
 
-test("live pi through tia: accepted bundle NEXT creates a fresh session", {
+test("live pi RPC: accepted bundle NEXT creates a fresh session", {
 	skip: !SHOULD_RUN,
 }, async () => {
 	const h = createRpcHarness();
@@ -222,7 +220,7 @@ test("live pi through tia: accepted bundle NEXT creates a fresh session", {
 	}
 });
 
-test("live pi through tia: rejected bundle NEXT stays in the same session", {
+test("live pi RPC: rejected bundle NEXT stays in the same session", {
 	skip: !SHOULD_RUN,
 }, async () => {
 	const h = createRpcHarness();

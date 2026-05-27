@@ -2,7 +2,11 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { handleLoopAgentEnd, handleLoopSessionStart } from "./loop-engine.js";
+import {
+	handleLoopAgentEnd,
+	handleLoopSessionStart,
+	handleLoopTurnEnd,
+} from "./loop-engine.js";
 import { readState, updateState } from "./state.js";
 
 function isLoopRunning(cwd: string): boolean {
@@ -57,9 +61,10 @@ function handleBlockedSessionMutation(
 }
 
 function handleSessionShutdown(ctx: ExtensionContext) {
-	const state = readState(ctx.cwd);
+	const cwd = ctx.cwd;
+	const state = readState(cwd);
 	if (state?.running && !state.transitioning) {
-		updateState(ctx.cwd, { cancel_requested: true });
+		updateState(cwd, { cancel_requested: true });
 	}
 }
 
@@ -104,6 +109,7 @@ export function registerEventHandlers(pi: ExtensionAPI): void {
 	);
 	pi.on("session_shutdown", async (_event, ctx) => handleSessionShutdown(ctx));
 	pi.on("session_start", handleSessionStart.bind(null, pi));
+	pi.on("turn_end", (event, ctx) => handleLoopTurnEnd(pi, ctx, event));
 	pi.on("agent_end", (event, ctx) => {
 		const messages = (
 			event as {
