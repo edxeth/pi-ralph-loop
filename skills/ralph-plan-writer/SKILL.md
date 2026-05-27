@@ -1,12 +1,24 @@
 ---
 name: ralph-plan-writer
-description: Creates a Ralph execution bundle from a user goal and optional source planning docs such as PRDs and SPECs. Use when the user wants a Ralph loop plan, a fresh-context execution bundle, `.ralph/plan.md`, `.ralph/items.json`, `.ralph/prompt.md`, `.ralph/progress.md`, or asks to derive a Ralph/AFK/autonomous loop from a PRD, SPEC, or implementation goal.
+description: Write a Ralph loop-compatible plan.
 disable-model-invocation: true
 ---
 
 # Ralph Plan Writer
 
 Write a Ralph Wiggum loop-compatible plan, but do not execute it.
+
+## Activation semantics
+
+When this skill is invoked, loaded, pasted, or appears immediately before a user request, treat the user's next concrete request as the goal for a Ralph bundle.
+
+Imperatives like "build X", "fix Y", or "create Z" define the goal. They are not permission to execute the work.
+
+Do not install dependencies, scaffold projects, edit app code, start services, or implement the goal. Only inspect enough repo state and docs to write the Ralph bundle.
+
+Never execute the generated plan or goal in this conversation. The bundle is meant to run in a separate Pi session with fresh context through `/ralph-loop`.
+
+If the user explicitly asks to execute instead of plan, say this skill only writes the bundle and the work should run separately.
 
 ## Technique doctrine
 
@@ -27,9 +39,11 @@ Generate exactly four files:
 3. `.ralph/prompt.md`
 4. `.ralph/progress.md`
 
-The exact prompt reference in the final response enables bundle mode. Bundle mode validates the four files, snapshots item/progress/source-doc/git state before each iteration, rejects invalid NEXT/COMPLETE promises, and starts the next fresh session only after the contract passes.
+The exact prompt reference in the final response enables bundle mode. Bundle mode validates the four files, snapshots item/progress/source-doc/git state before each iteration, rejects invalid NEXT/COMPLETE promises, and starts the next fresh session only after the contract passes. Do not offer to start implementing the plan in the current session.
 
 ## Missing goal
+
+A concrete imperative request counts as a goal. Example: "Build a todo app" means write a Ralph bundle for building it, not build it now.
 
 If the user did not provide a concrete goal, ask exactly:
 
