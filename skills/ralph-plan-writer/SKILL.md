@@ -210,6 +210,9 @@ Instruct the runtime agent to:
 - when `source_docs` lists paths, treat them as protected secondary evidence; read them only when the selected item needs clarification
 - inspect recent git history and current repo state
 - choose one unfinished item using `.ralph/plan.md` prioritization
+- treat `.ralph/items.json` as the only authoritative Ralph item list
+- ignore any secondary task source, todo list, issue queue, planner state, chat memory, or harness-local task tracker when choosing Ralph work
+- use secondary planners or harness-local task trackers, if present, only for the already-selected item and never to choose or start another item
 - follow `.ralph/plan.md` and `.ralph/items.json` when source docs conflict with the generated bundle
 - work only on that item
 - run every required verification gate
@@ -224,6 +227,21 @@ Promise rules:
 - Emit `<promise>NEXT</promise>` only after one item passes, all required checks pass, progress was appended, listed source docs stayed clean when `source_docs` is non-empty, and the commit policy was satisfied.
 - Emit `<promise>COMPLETE</promise>` only after every item passes and all required checks pass. If COMPLETE only verifies an already-finished bundle, it does not need to append progress.
 
+Terminal boundary rules:
+
+- Treat a valid promise tag as the handoff to the loop harness, not as a progress report.
+- As soon as the selected item is marked passing in the current invocation, stop implementation work. From that point, only finalize the same iteration.
+- Finalizing the same iteration means only: run required verification gates, update `.ralph/items.json`, append `.ralph/progress.md`, satisfy `runtime_contract.commit_policy`, verify the commit state when commits are required, and emit the required promise tag.
+- While finalizing the same iteration, do not choose another item, plan another item, inspect files for another item, edit source files for another item, update any secondary task tracker for another item, or explain what comes next.
+- The final response for a successful one-item iteration must be exactly one promise tag on the last non-empty line.
+
+Boundary example:
+
+```text
+Wrong: Item 1 passed. Next I will work on Item 2.
+Right: <promise>NEXT</promise>
+```
+
 Ban bypasses in the runtime prompt: no skipped checks, weakened tests, `--no-verify`, `|| true`, suppressed failures, deleted tests, or success claims without command evidence.
 
 ## Runtime enforcement to account for
@@ -232,7 +250,7 @@ The extension rejects NEXT if zero or multiple items move from `passes:false` to
 
 The extension rejects COMPLETE if any item has `passes:false`, immutable item fields change, progress checks fail, listed source docs change when `source_docs` is non-empty, verification gates fail, or the configured commit policy fails in `runtime_contract.git_root`.
 
-Rejected promises continue in the same session with a corrective prompt. Accepted NEXT starts the next fresh session. Accepted COMPLETE ends the loop.
+Rejected promises continue in the same session with a corrective prompt. Accepted NEXT starts the next fresh session. The current runtime agent must not start the next item itself. Accepted COMPLETE ends the loop.
 
 ## Final response
 
