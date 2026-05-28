@@ -28,6 +28,7 @@ export type RuntimeContract = {
 	require_one_item_per_iteration?: boolean;
 	require_clean_source_docs?: boolean;
 	commit_policy?: CommitPolicy;
+	git_root?: string;
 	/** @deprecated Use commit_policy instead. */
 	require_one_commit_per_iteration?: boolean;
 };

@@ -31,6 +31,22 @@ const ITERATION_DELAY_MS = 500;
 const PROVIDER_ERROR_IDLE_CHECK_MS = 1_000;
 const PROVIDER_ERROR_MAX_WAIT_MS = 180_000;
 const LIMIT_REMINDER_OPT_OUT_ENV = "RALPH_LIMIT_REMINDERS_DISABLED";
+function sendUserMessageWhenIdle(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	message: string,
+): void {
+	if (ctx.isIdle()) {
+		pi.sendUserMessage(message);
+		return;
+	}
+	const timeout = setTimeout(
+		() => sendUserMessageWhenIdle(pi, ctx, message),
+		250,
+	);
+	timeout.unref?.();
+}
+
 const LIMIT_REMINDERS = [
 	{
 		id: "75",
@@ -144,6 +160,18 @@ function handleProviderWait(
 		errorCount,
 		finalMessage,
 	);
+}
+
+function getCurrentState(ctx: ExtensionContext): RalphLoopState | null {
+	const state = readState(ctx.cwd);
+	if (!state?.running) return null;
+	if (state.session_id === ctx.sessionManager.getSessionId()) return state;
+
+	updateState(ctx.cwd, {
+		session_id: ctx.sessionManager.getSessionId(),
+		last_session_file: ctx.sessionManager.getSessionFile() ?? null,
+	});
+	return readState(ctx.cwd);
 }
 
 function handleCompletePromise(
@@ -298,7 +326,9 @@ function handleMissingPromise(
 			: `Iteration ${state.iteration}/${state.max_iterations} missing control promise; nudging continue (${_promiseNudges}/${MAX_PROMISE_NUDGES - 1})`,
 		"warning",
 	);
-	pi.sendUserMessage(
+	sendUserMessageWhenIdle(
+		pi,
+		ctx,
 		isFinalWarningNudge ? FINAL_PROMISE_WARNING_NUDGE : "continue",
 	);
 }
@@ -324,7 +354,7 @@ function startIteration(
 		last_session_file: ctx.sessionManager.getSessionFile() ?? null,
 	});
 	if (state.bundle_mode) {
-		snapshotBundleIteration(ctx.cwd);
+		snapshotBundleIteration(ctx.cwd, state);
 	}
 	pi.sendUserMessage(task);
 }
@@ -366,8 +396,8 @@ export function handleLoopAgentEnd(
 	messages: AgentEndMessages,
 	ctx: ExtensionContext,
 ): void {
-	const state = readState(ctx.cwd);
-	if (!state?.running) return;
+	const state = getCurrentState(ctx);
+	if (!state) return;
 
 	if (shouldStop(ctx.cwd)) {
 		handleRequestedStop(ctx, state);
@@ -469,7 +499,7 @@ export async function runLoop(
 
 	writeState(cwd, initialState, task);
 	if (bundleMode) {
-		snapshotBundleIteration(cwd);
+		snapshotBundleIteration(cwd, initialState);
 	}
 
 	setCommandCtx(ctx);

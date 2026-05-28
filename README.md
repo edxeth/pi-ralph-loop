@@ -146,7 +146,8 @@ Add `runtime_contract` when you want stricter gates:
     ],
     "require_progress_append": true,
     "require_one_item_per_iteration": true,
-    "commit_policy": "exactly_one"
+    "commit_policy": "exactly_one",
+    "git_root": "."
   }
 }
 ```
@@ -159,6 +160,7 @@ Useful `runtime_contract` fields:
 | `require_progress_append` | `NEXT` requires `.ralph/progress.md` to grow. |
 | `require_one_item_per_iteration` | `NEXT` requires exactly one item to move from `passes:false` to `passes:true`. |
 | `commit_policy` | `none`, `optional`, `exactly_one`, or `at_least_one`. |
+| `git_root` | Directory where Ralph snapshots and counts commits. Defaults to `.`. Use a relative path such as `discord-clone` when the git repo lives below the bundle root. |
 | `source_docs` + `require_clean_source_docs` | Optional file-protection gate. Omit unless you want Ralph to reject edits to listed files. |
 
 With bundle gates enabled, `NEXT` means one item passed and the required checks passed. `COMPLETE` means every item passed and the required checks passed. Rejected promises stay in the same session with a corrective prompt.

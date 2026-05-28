@@ -18,8 +18,7 @@ export function extractControlPromise(
 		.filter((line) => line.length > 0);
 	if (lines.length === 0) return null;
 
-	const match = lines[lines.length - 1].match(
-		/<promise>(NEXT|COMPLETE|STOP)<\/promise>$/,
-	);
+	const finalLine = lines[lines.length - 1].replace(/^`+|`+$/g, "");
+	const match = finalLine.match(/<promise>(NEXT|COMPLETE|STOP)<\/promise>$/);
 	return match ? (match[1] as ControlPromise) : null;
 }

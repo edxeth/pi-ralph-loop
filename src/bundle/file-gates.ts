@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
+import path from "node:path";
 
-import { hashSourceDocs, readGitHead } from "./snapshot.js";
+import { hashSourceDocs, readGitHead, resolveGitRoot } from "./snapshot.js";
 import type {
 	BundleFileGateSnapshot,
 	CommitPolicy,
@@ -110,9 +111,10 @@ function evaluateCommitPolicy(
 	if (snapshot.git_head === undefined)
 		return "missing pre-iteration git HEAD snapshot";
 
-	const currentHead = readGitHead(bundle.root);
+	const gitRoot = resolveGitRoot(bundle.root, bundle.items.runtime_contract);
+	const currentHead = readGitHead(gitRoot);
 	const commitCount = countIterationCommits(
-		bundle.root,
+		gitRoot,
 		snapshot.git_head,
 		currentHead,
 	);
@@ -120,14 +122,15 @@ function evaluateCommitPolicy(
 		return `could not verify commit policy ${policy} for this iteration`;
 	}
 
+	const relativeGitRoot = path.relative(bundle.root, gitRoot) || ".";
 	if (policy === "none" && commitCount !== 0) {
-		return `no commits are allowed for this iteration; observed ${commitCount}`;
+		return `no commits are allowed in ${relativeGitRoot} for this iteration; observed ${commitCount}`;
 	}
 	if (policy === "exactly_one" && commitCount !== 1) {
-		return `exactly one commit must be created for this iteration; observed ${commitCount}`;
+		return `exactly one commit must be created in ${relativeGitRoot} for this iteration; observed ${commitCount}`;
 	}
 	if (policy === "at_least_one" && commitCount < 1) {
-		return `at least one commit must be created for this iteration; observed ${commitCount}`;
+		return `at least one commit must be created in ${relativeGitRoot} for this iteration; observed ${commitCount}`;
 	}
 
 	return null;

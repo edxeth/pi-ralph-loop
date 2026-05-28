@@ -10,9 +10,39 @@ import {
 import { updateState } from "../state.js";
 import type { RalphLoopState } from "../types.js";
 
-export function snapshotBundleIteration(cwd: string): void {
+const liveSnapshots = new Map<string, Partial<RalphLoopState>>();
+const latestSnapshots = new Map<string, Partial<RalphLoopState>>();
+
+function snapshotKey(cwd: string, state: RalphLoopState): string {
+	return `${state.loop_token}:${state.iteration}:${cwd}`;
+}
+
+function latestSnapshotKey(cwd: string, state: RalphLoopState): string {
+	return `${state.loop_token}:${cwd}`;
+}
+
+export function snapshotBundleIteration(
+	cwd: string,
+	state: RalphLoopState,
+): void {
 	const bundle = loadRalphBundle(cwd);
-	updateState(cwd, createBundleSnapshot(bundle));
+	const snapshot = createBundleSnapshot(bundle);
+	liveSnapshots.set(snapshotKey(cwd, state), snapshot);
+	latestSnapshots.set(latestSnapshotKey(cwd, state), {
+		...snapshot,
+		iteration: state.iteration,
+	});
+	updateState(cwd, snapshot);
+}
+
+function getValidationSnapshot(
+	cwd: string,
+	state: RalphLoopState,
+): RalphLoopState {
+	const snapshot =
+		liveSnapshots.get(snapshotKey(cwd, state)) ??
+		latestSnapshots.get(latestSnapshotKey(cwd, state));
+	return snapshot ? { ...state, ...snapshot } : state;
 }
 
 export function validateBundlePromise(
@@ -23,17 +53,18 @@ export function validateBundlePromise(
 	if (!state.bundle_mode) return null;
 	try {
 		const bundle = loadRalphBundle(cwd);
+		const snapshot = getValidationSnapshot(cwd, state);
 		if (promise === "NEXT") {
 			return (
-				evaluateNextGate(state.bundle_items_snapshot, bundle.items.items) ??
-				evaluateBundleFileGate(bundle, state) ??
+				evaluateNextGate(snapshot.bundle_items_snapshot, bundle.items.items) ??
+				evaluateBundleFileGate(bundle, snapshot) ??
 				evaluateVerificationGates(bundle)
 			);
 		}
 
 		return (
-			evaluateCompleteGate(state.bundle_items_snapshot, bundle.items.items) ??
-			evaluateBundleCompleteFileGate(bundle, state) ??
+			evaluateCompleteGate(snapshot.bundle_items_snapshot, bundle.items.items) ??
+			evaluateBundleCompleteFileGate(bundle, snapshot) ??
 			evaluateVerificationGates(bundle)
 		);
 	} catch (err) {

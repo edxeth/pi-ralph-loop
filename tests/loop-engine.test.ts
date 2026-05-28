@@ -39,6 +39,8 @@ type Harness = {
 	pi: ExtensionAPI;
 	ctx: ExtensionCommandContext;
 	sentMessages: string[];
+	sentMessageOptions: Array<{ deliverAs?: string; triggerTurn?: boolean } | undefined>;
+	idleWaits: number;
 	customMessages: Array<{
 		customType: string;
 		content?: unknown;
@@ -143,6 +145,7 @@ function createHarness(): Harness {
 	const cwd = mkdtempSync(join(tmpdir(), "ralph-loop-"));
 	const branch: MockAssistantEntry[] = [];
 	const sentMessages: string[] = [];
+	const sentMessageOptions: Harness["sentMessageOptions"] = [];
 	const customMessages: Harness["customMessages"] = [];
 	const notifications: Array<{ message: string; type: string }> = [];
 	const statusUpdates: Array<{ key: string; value: string | undefined }> = [];
@@ -151,6 +154,7 @@ function createHarness(): Harness {
 	let sessionFile = "/sessions/session-1.jsonl";
 	let newSessionCalls = 0;
 	let idle = true;
+	let idleWaits = 0;
 	let contextPercent: number | null | undefined;
 
 	const ui = {
@@ -165,8 +169,12 @@ function createHarness(): Harness {
 	};
 
 	const pi = {
-		sendUserMessage(message: string) {
+		sendUserMessage(
+			message: string,
+			options?: { deliverAs?: string; triggerTurn?: boolean },
+		) {
 			sentMessages.push(message);
+			sentMessageOptions.push(options);
 		},
 		sendMessage(
 			message: {
@@ -202,7 +210,10 @@ function createHarness(): Harness {
 							contextWindow: 100_000,
 							percent: contextPercent,
 						},
-			waitForIdle: async () => {},
+			waitForIdle: async () => {
+				idleWaits++;
+				idle = true;
+			},
 			newSession: async (options?: {
 				withSession?: (ctx: ExtensionCommandContext) => Promise<void>;
 			}) => {
@@ -238,6 +249,10 @@ function createHarness(): Harness {
 		pi,
 		ctx,
 		sentMessages,
+		sentMessageOptions,
+		get idleWaits() {
+			return idleWaits;
+		},
 		customMessages,
 		notifications,
 		get newSessionCalls() {
@@ -297,6 +312,68 @@ test("bundle NEXT accepts exactly one completed item", async () => {
 	assert.equal(h.newSessionCalls, 1);
 });
 
+test("bundle NEXT survives agent restoring stale loop state", async () => {
+	const h = createHarness();
+	writeBundleItems(h.cwd, [true, true, false]);
+	h.writeState(
+		makeBaseState({
+			iteration: 2,
+			max_iterations: 4,
+			transitioning: false,
+			bundle_mode: true,
+		}),
+	);
+
+	await continueLoop(h.pi, h.ctx);
+	const activeState = h.readState();
+	assert.ok(activeState);
+	assert.ok(activeState.bundle_items_snapshot?.includes('"passes":true'));
+
+	// Simulates the runtime file being restored from git during the iteration.
+	// The stale snapshot predates item 2 passing, so using it would observe two
+	// completed items when only item 3 changed in this iteration.
+	h.writeState(
+		{
+			...activeState,
+			session_id: "old-session",
+			bundle_items_snapshot: JSON.stringify([
+				{
+					category: "test",
+					description: "Item 1",
+					steps: ["Verify it"],
+					passes: true,
+				},
+				{
+					category: "test",
+					description: "Item 2",
+					steps: ["Verify it"],
+					passes: false,
+				},
+				{
+					category: "test",
+					description: "Item 3",
+					steps: ["Verify it"],
+					passes: false,
+				},
+			]),
+		},
+		"stale task",
+	);
+	assert.equal(h.readState()?.iteration, 2);
+
+	writeBundleItems(h.cwd, [true, true, true]);
+	h.simulateAgentEnd({ text: "Iteration 2 without promise" });
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(h.sentMessages.at(-1), "continue");
+
+	h.simulateAgentEnd({ text: "Iteration 2\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.iteration, 3);
+	assert.equal(h.readState()?.transitioning, true);
+	await new Promise((r) => setTimeout(r, 600));
+	assert.equal(h.newSessionCalls, 1);
+});
+
 test("bundle NEXT runs configured verification gates", async () => {
 	const h = createHarness();
 	writeBundleItems(h.cwd, [false], {
@@ -348,7 +425,9 @@ test("bundle NEXT rejects failed verification gates", async () => {
 		h.notifications.at(-1)?.message ?? "",
 		/verification gate fail exited with code 2/,
 	);
+	await new Promise((resolve) => setTimeout(resolve, 50));
 	assert.match(h.sentMessages.at(-1) ?? "", /bad gate/);
+	assert.equal(h.sentMessageOptions.at(-1), undefined);
 });
 
 test("bundle NEXT rejects zero completed items", async () => {
@@ -364,6 +443,7 @@ test("bundle NEXT rejects zero completed items", async () => {
 	assert.equal(state?.transitioning, false);
 	assert.equal(h.newSessionCalls, 0);
 	assert.match(h.notifications.at(-1)?.message ?? "", /observed 0/);
+	await new Promise((resolve) => setTimeout(resolve, 50));
 	assert.match(
 		h.sentMessages.at(-1) ?? "",
 		/^Ralph rejected <promise>NEXT<\/promise>\./,
@@ -373,6 +453,7 @@ test("bundle NEXT rejects zero completed items", async () => {
 		/Failed invariant: exactly one item/,
 	);
 	assert.match(h.sentMessages.at(-1) ?? "", /Continue this same iteration/);
+	assert.equal(h.sentMessageOptions.at(-1), undefined);
 });
 
 test("bundle NEXT rejects multiple completed items", async () => {
@@ -461,6 +542,31 @@ test("bundle NEXT accepts exactly one commit when required", async () => {
 	await continueLoop(h.pi, h.ctx);
 	writeBundleItems(h.cwd, [true], { require_one_commit_per_iteration: true });
 	commitAll(h.cwd, "complete item");
+	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+	assert.equal(h.readState()?.iteration, 2);
+	await new Promise((r) => setTimeout(r, 600));
+	assert.equal(h.newSessionCalls, 1);
+});
+
+test("bundle NEXT accepts exactly one commit in configured git_root", async () => {
+	const h = createHarness();
+	const appRoot = join(h.cwd, "discord-clone");
+	mkdirSync(appRoot, { recursive: true });
+	initGitRepo(appRoot);
+	writeBundleItems(h.cwd, [false], {
+		commit_policy: "exactly_one",
+		git_root: "discord-clone",
+	});
+	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+
+	await continueLoop(h.pi, h.ctx);
+	writeFileSync(join(appRoot, "app.txt"), "done\n");
+	commitAll(appRoot, "complete item in app repo");
+	writeBundleItems(h.cwd, [true], {
+		commit_policy: "exactly_one",
+		git_root: "discord-clone",
+	});
 	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
 
 	assert.equal(h.readState()?.iteration, 2);
@@ -716,6 +822,21 @@ test("agent_end without terminal stopReason waits without injecting continue", (
 	assert.deepEqual(h.sentMessages, []);
 });
 
+test("agent_end missing control promise queues continue nudge", async () => {
+	const h = createHarness();
+	h.writeState(makeBaseState({ transitioning: false }));
+
+	h.simulateAgentEnd({ text: "Done but forgot the tag" });
+
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(h.sentMessages.at(-1), "continue");
+	assert.equal(h.sentMessageOptions.at(-1), undefined);
+	assert.match(
+		h.notifications.at(-1)?.message ?? "",
+		/missing control promise; nudging continue/,
+	);
+});
+
 test("agent_end with NEXT advances iteration and requests new session", async () => {
 	const h = createHarness();
 	h.writeState(
@@ -792,6 +913,21 @@ test("agent_end accepts promise tag at end of final line", () => {
 	assert.equal(state?.stop_reason, "complete");
 });
 
+test("agent_end accepts promise tag wrapped in markdown code", () => {
+	const h = createHarness();
+	h.writeState(
+		makeBaseState({ iteration: 2, max_iterations: 3, transitioning: false }),
+	);
+
+	h.simulateAgentEnd({
+		text: "All items now pass.\n\n`<promise>COMPLETE</promise>`",
+	});
+
+	const state = h.readState();
+	assert.equal(state?.running, false);
+	assert.equal(state?.stop_reason, "complete");
+});
+
 test("bundle COMPLETE accepts when every item passes", async () => {
 	const h = createHarness();
 	writeBundleItems(h.cwd, [true, false]);
@@ -820,7 +956,7 @@ test("bundle COMPLETE does not require progress append", async () => {
 	assert.equal(state?.stop_reason, "complete");
 });
 
-test("bundle rejection prompt waits until idle", async () => {
+test("bundle rejection prompt waits for idle then triggers correction", async () => {
 	const h = createHarness();
 	writeBundleItems(h.cwd, [false]);
 	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
@@ -829,14 +965,15 @@ test("bundle rejection prompt waits until idle", async () => {
 	h.setIdle(false);
 	h.simulateAgentEnd({ text: "No item done\n<promise>NEXT</promise>" });
 
-	assert.deepEqual(h.sentMessages, ["task"]);
 	assert.equal(h.readState()?.bundle_rejection_count, 1);
+	assert.deepEqual(h.sentMessages, ["task"]);
 	h.setIdle(true);
-	await new Promise((r) => setTimeout(r, 300));
+	await new Promise((resolve) => setTimeout(resolve, 300));
 	assert.match(
 		h.sentMessages.at(-1) ?? "",
 		/^Ralph rejected <promise>NEXT<\/promise>/,
 	);
+	assert.equal(h.sentMessageOptions.at(-1), undefined);
 });
 
 test("bundle rejections stop after repeated invariant failures", async () => {
@@ -892,6 +1029,7 @@ test("bundle COMPLETE rejects unfinished items", async () => {
 	assert.equal(state?.transitioning, false);
 	assert.equal(h.newSessionCalls, 0);
 	assert.match(h.notifications.at(-1)?.message ?? "", /every item/);
+	await new Promise((resolve) => setTimeout(resolve, 50));
 	assert.match(
 		h.sentMessages.at(-1) ?? "",
 		/^Ralph rejected <promise>COMPLETE<\/promise>\./,
@@ -901,6 +1039,7 @@ test("bundle COMPLETE rejects unfinished items", async () => {
 		/Failed invariant: COMPLETE requires every item/,
 	);
 	assert.match(h.sentMessages.at(-1) ?? "", /Continue this same iteration/);
+	assert.equal(h.sentMessageOptions.at(-1), undefined);
 });
 
 test("bundle COMPLETE rejects failed verification gates", async () => {
@@ -926,7 +1065,9 @@ test("bundle COMPLETE rejects failed verification gates", async () => {
 		h.notifications.at(-1)?.message ?? "",
 		/verification gate complete exited with code 3/,
 	);
+	await new Promise((resolve) => setTimeout(resolve, 50));
 	assert.match(h.sentMessages.at(-1) ?? "", /complete bad/);
+	assert.equal(h.sentMessageOptions.at(-1), undefined);
 });
 
 test("bundle COMPLETE rejects immutable item changes", async () => {

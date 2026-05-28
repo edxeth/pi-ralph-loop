@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import type { BundleItem, BundleItemsFile, RuntimeContract } from "./types.js";
 
 function fail(message: string): never {
@@ -53,6 +55,21 @@ function validateRuntimeContract(value: unknown): RuntimeContract {
 			);
 		}
 		contract.commit_policy = value.commit_policy;
+	}
+
+	if (value.git_root !== undefined) {
+		if (
+			typeof value.git_root !== "string" ||
+			value.git_root.length === 0 ||
+			path.isAbsolute(value.git_root)
+		) {
+			fail("runtime_contract.git_root must be a non-empty relative path");
+		}
+		const normalized = path.normalize(value.git_root);
+		if (normalized === ".." || normalized.startsWith(`..${path.sep}`)) {
+			fail("runtime_contract.git_root must not escape the workspace");
+		}
+		contract.git_root = value.git_root;
 	}
 
 	for (const key of [

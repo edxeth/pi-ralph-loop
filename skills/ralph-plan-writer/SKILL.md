@@ -158,7 +158,8 @@ Generate valid JSON with this shape:
     ],
     "require_progress_append": true,
     "require_one_item_per_iteration": true,
-    "commit_policy": "exactly_one"
+    "commit_policy": "exactly_one",
+    "git_root": "."
   },
   "items": [
     {
@@ -187,7 +188,8 @@ Rules:
 - Use `at_least_one` when an item may need checkpoint commits.
 - Use `optional` for exploratory or patch-only loops.
 - Use `none` for read-only, audit, or reporting loops where commits would be wrong.
-- For greenfield loops with commit enforcement, tell the runtime agent to initialize git during the first iteration.
+- Set `git_root` when commits should be counted outside the `.ralph/` workspace root. Use `"."` when the bundle root owns git. Use a relative subdirectory such as `"discord-clone"` when the runtime agent initializes and commits inside that app directory.
+- For greenfield loops with commit enforcement, tell the runtime agent to initialize git in `runtime_contract.git_root` during the first iteration.
 - Do not delete items after creation.
 - Do not rewrite `description` or `steps` after creation.
 - Move `passes` to `true` only after end-to-end verification.
@@ -214,7 +216,7 @@ Instruct the runtime agent to:
 - update `.ralph/items.json` by changing `passes` and `regression_notes` only
 - append one `.ralph/progress.md` entry with the item, decision rationale, changed files, verification results, and next-iteration notes
 - preserve files listed in `runtime_contract.source_docs` unless the user allowed edits
-- follow `runtime_contract.commit_policy`; initialize git during the first iteration when commits are required and no git repo exists
+- follow `runtime_contract.commit_policy`; initialize git in `runtime_contract.git_root` during the first iteration when commits are required and no git repo exists
 - end with one promise tag on the last non-empty line
 
 Promise rules:
@@ -226,9 +228,9 @@ Ban bypasses in the runtime prompt: no skipped checks, weakened tests, `--no-ver
 
 ## Runtime enforcement to account for
 
-The extension rejects NEXT if zero or multiple items move from `passes:false` to `passes:true`, immutable item fields change, progress append checks fail, listed source docs change when `source_docs` is non-empty, configured verification gates fail, or the configured commit policy fails.
+The extension rejects NEXT if zero or multiple items move from `passes:false` to `passes:true`, immutable item fields change, progress append checks fail, listed source docs change when `source_docs` is non-empty, configured verification gates fail, or the configured commit policy fails in `runtime_contract.git_root`.
 
-The extension rejects COMPLETE if any item has `passes:false`, immutable item fields change, progress checks fail, listed source docs change when `source_docs` is non-empty, verification gates fail, or the configured commit policy fails.
+The extension rejects COMPLETE if any item has `passes:false`, immutable item fields change, progress checks fail, listed source docs change when `source_docs` is non-empty, verification gates fail, or the configured commit policy fails in `runtime_contract.git_root`.
 
 Rejected promises continue in the same session with a corrective prompt. Accepted NEXT starts the next fresh session. Accepted COMPLETE ends the loop.
 

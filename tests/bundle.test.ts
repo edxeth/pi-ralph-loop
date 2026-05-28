@@ -75,6 +75,7 @@ test("parseBundleItemsJson accepts distilled-only runtime contracts", () => {
 				require_progress_append: true,
 				require_one_item_per_iteration: true,
 				commit_policy: "exactly_one",
+				git_root: "discord-clone",
 			},
 			items: [
 				{
@@ -92,6 +93,37 @@ test("parseBundleItemsJson accepts distilled-only runtime contracts", () => {
 	assert.deepEqual(parsed.runtime_contract?.source_docs, []);
 	assert.equal(parsed.runtime_contract?.require_clean_source_docs, undefined);
 	assert.equal(parsed.runtime_contract?.commit_policy, "exactly_one");
+	assert.equal(parsed.runtime_contract?.git_root, "discord-clone");
+});
+
+test("parseBundleItemsJson rejects unsafe git_root values", () => {
+	const invalidGitRootBundle = (gitRoot: unknown) =>
+		JSON.stringify({
+			version: 1,
+			runtime_contract: { git_root: gitRoot },
+			items: [
+				{
+					category: "git-root",
+					description: "Validate the configured git root.",
+					steps: ["Load the bundle"],
+					passes: false,
+					regression_notes: "",
+				},
+			],
+		});
+
+	assert.throws(
+		() => parseBundleItemsJson(invalidGitRootBundle("")),
+		/git_root must be a non-empty relative path/,
+	);
+	assert.throws(
+		() => parseBundleItemsJson(invalidGitRootBundle("/tmp/project")),
+		/git_root must be a non-empty relative path/,
+	);
+	assert.throws(
+		() => parseBundleItemsJson(invalidGitRootBundle("../project")),
+		/git_root must not escape the workspace/,
+	);
 });
 
 test("parseBundleItemsJson rejects malformed and invalid items.json", () => {
