@@ -275,18 +275,21 @@ function createHarness(): Harness {
 	};
 }
 
-test("runLoop initializes state and creates a fresh session", async () => {
+test("runLoop schedules initial fresh session after returning", async () => {
 	const h = createHarness();
 
 	await runLoop(h.pi, h.ctx, "task", 3);
 
 	const state = h.readState();
-	assert.equal(h.newSessionCalls, 1);
+	assert.equal(h.newSessionCalls, 0);
 	assert.equal(state?.running, true);
 	assert.equal(state?.iteration, 1);
 	assert.equal(state?.max_iterations, 3);
 	// transitioning remains true until session_start fires
 	assert.equal(state?.transitioning, true);
+
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(h.newSessionCalls, 1);
 });
 
 test("bundle NEXT accepts exactly one completed item", async () => {
@@ -837,7 +840,7 @@ test("agent_end missing control promise queues continue nudge", async () => {
 	);
 });
 
-test("agent_end with NEXT advances iteration and requests new session", async () => {
+test("agent_end with NEXT notifies, advances iteration, and requests new session", async () => {
 	const h = createHarness();
 	h.writeState(
 		makeBaseState({ iteration: 1, max_iterations: 3, transitioning: false }),
@@ -853,6 +856,10 @@ test("agent_end with NEXT advances iteration and requests new session", async ()
 	const state = h.readState();
 	assert.equal(state?.iteration, 2);
 	assert.equal(state?.transitioning, true);
+	assert.deepEqual(h.notifications.at(-1), {
+		message: "Starting iteration 2/3 in a fresh session...",
+		type: "info",
+	});
 
 	// newSession is called via setTimeout, so wait a tick.
 	await new Promise((r) => setTimeout(r, 600));

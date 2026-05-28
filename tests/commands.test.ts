@@ -45,6 +45,7 @@ function makeCommandsState(
 		bundle_items_snapshot: null,
 		git_head: null,
 		bundle_rejection_count: 0,
+		limit_reminders: null,
 	};
 	return { ...baseState, ...overrides };
 }
@@ -161,11 +162,13 @@ test("ralph-loop starts bundle mode for @.ralph/prompt.md", async () => {
 		.get("ralph-loop")
 		?.handler("@.ralph/prompt.md --max-iterations=3", h.ctx);
 
-	assert.equal(h.getNewSessionCount(), 1);
+	assert.equal(h.getNewSessionCount(), 0);
 	assert.equal(
 		h.notifications.at(-1)?.message,
 		"Ralph loop started (max 3 iterations)",
 	);
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.equal(h.getNewSessionCount(), 1);
 	const state = readState(h.cwd);
 	assert.equal(state?.bundle_mode, true);
 	assert.ok(state?.loop_token);
@@ -183,11 +186,13 @@ test("ralph-loop starts bundle mode for @./.ralph/prompt.md", async () => {
 
 	await h.commands.get("ralph-loop")?.handler('"@./.ralph/prompt.md"', h.ctx);
 
-	assert.equal(h.getNewSessionCount(), 1);
+	assert.equal(h.getNewSessionCount(), 0);
 	assert.equal(
 		h.notifications.at(-1)?.message,
 		"Ralph loop started (max 100 iterations)",
 	);
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.equal(h.getNewSessionCount(), 1);
 });
 
 test("ralph-loop rejects bundle mode when bundle validation fails", async () => {
@@ -207,11 +212,13 @@ test("ralph-loop preserves non-bundle prompt references", async () => {
 
 	await h.commands.get("ralph-loop")?.handler("@notes.md", h.ctx);
 
-	assert.equal(h.getNewSessionCount(), 1);
+	assert.equal(h.getNewSessionCount(), 0);
 	assert.equal(
 		h.notifications.at(-1)?.message,
 		"Ralph loop started (max 100 iterations)",
 	);
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.equal(h.getNewSessionCount(), 1);
 });
 
 test("ralph-loop rejects start when active loop state exists", async () => {
@@ -262,6 +269,8 @@ test("ralph-restart preserves saved bundle mode", async () => {
 	await h.commands.get("ralph-restart")?.handler("", h.ctx);
 
 	assert.equal(readState(h.cwd)?.bundle_mode, true);
+	assert.equal(h.getNewSessionCount(), 0);
+	await new Promise((resolve) => setTimeout(resolve, 10));
 	assert.equal(h.getNewSessionCount(), 1);
 });
 

@@ -200,11 +200,33 @@ function handleStopPromise(ctx: ExtensionContext, state: RalphLoopState): void {
 	finalizeLoop(ctx, ctx.cwd, "manual_stop", state.error_count);
 }
 
+function scheduleInitialSessionTransition(
+	ctx: ExtensionCommandContext,
+	cwd: string,
+	errorCount: number,
+): void {
+	const timeout = setTimeout(async () => {
+		try {
+			const result = await createFreshSession(ctx);
+			if (result.cancelled) {
+				finalizeLoop(ctx, cwd, "user_cancelled", errorCount);
+			}
+		} catch (err) {
+			ctx.ui.notify(
+				`Ralph loop error during initial session transition: ${err instanceof Error ? err.message : String(err)}`,
+				"error",
+			);
+			finalizeLoop(ctx, cwd, "error", errorCount);
+		}
+	}, 0);
+	timeout.unref?.();
+}
+
 function scheduleNextIteration(
 	ctx: ExtensionContext,
 	state: RalphLoopState,
 ): void {
-	setTimeout(async () => {
+	const timeout = setTimeout(async () => {
 		const cmdCtx = getCommandCtx();
 		if (!cmdCtx) {
 			ctx.ui.notify(
@@ -227,6 +249,7 @@ function scheduleNextIteration(
 			finalizeLoop(ctx, ctx.cwd, "error", state.error_count);
 		}
 	}, ITERATION_DELAY_MS);
+	timeout.unref?.();
 }
 
 function handleNextPromise(
@@ -249,8 +272,13 @@ function handleNextPromise(
 		return;
 	}
 
+	const nextIteration = state.iteration + 1;
+	ctx.ui.notify(
+		`Starting iteration ${nextIteration}/${state.max_iterations} in a fresh session...`,
+		"info",
+	);
 	updateState(ctx.cwd, {
-		iteration: state.iteration + 1,
+		iteration: nextIteration,
 		transitioning: true,
 		bundle_rejection_count: 0,
 		limit_reminders: null,
@@ -512,10 +540,7 @@ export async function runLoop(
 		return;
 	}
 
-	const result = await createFreshSession(ctx);
-	if (result.cancelled) {
-		finalizeLoop(ctx, cwd, "user_cancelled", initialErrorCount);
-	}
+	scheduleInitialSessionTransition(ctx, cwd, initialErrorCount);
 }
 
 /**
