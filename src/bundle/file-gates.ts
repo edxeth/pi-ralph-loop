@@ -1,14 +1,7 @@
-import { execFileSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
-import path from "node:path";
 
-import { hashSourceDocs, readGitHead, resolveGitRoot } from "./snapshot.js";
-import type {
-	BundleFileGateSnapshot,
-	CommitPolicy,
-	RalphBundle,
-	RuntimeContract,
-} from "./types.js";
+import { hashSourceDocs, readGitHead } from "./snapshot.js";
+import type { BundleFileGateSnapshot, RalphBundle } from "./types.js";
 
 function evaluateProgressAppend(
 	bundle: RalphBundle,
@@ -62,75 +55,18 @@ function evaluateSourceDocs(
 	return null;
 }
 
-function getCommitPolicy(contract: RuntimeContract | undefined): CommitPolicy {
-	if (contract?.commit_policy) return contract.commit_policy;
-	const legacyContract = contract as
-		| { require_one_commit_per_iteration?: boolean }
-		| undefined;
-	return legacyContract?.require_one_commit_per_iteration === true
-		? "exactly_one"
-		: "optional";
-}
-
-function countIterationCommits(
-	root: string,
-	beforeHead: string | null,
-	afterHead: string | null,
-): number | null {
-	if (afterHead === null) return beforeHead === null ? 0 : null;
-
-	try {
-		const count =
-			beforeHead === null
-				? execFileSync("git", ["rev-list", "--count", afterHead], {
-						cwd: root,
-						encoding: "utf8",
-						stdio: ["ignore", "pipe", "ignore"],
-					}).trim()
-				: execFileSync(
-						"git",
-						["rev-list", "--count", `${beforeHead}..${afterHead}`],
-						{
-							cwd: root,
-							encoding: "utf8",
-							stdio: ["ignore", "pipe", "ignore"],
-						},
-					).trim();
-		return Number.parseInt(count, 10);
-	} catch {
-		return null;
-	}
-}
-
-function evaluateCommitPolicy(
+function evaluateCommitRequirement(
 	bundle: RalphBundle,
 	snapshot: BundleFileGateSnapshot,
 ): string | null {
-	const policy = getCommitPolicy(bundle.items.runtime_contract);
-	if (policy === "optional") return null;
-	if (snapshot.git_head === undefined)
+	if (bundle.items.runtime_contract?.require_commit !== true) return null;
+	if (snapshot.git_head === undefined) {
 		return "missing pre-iteration git HEAD snapshot";
-
-	const gitRoot = resolveGitRoot(bundle.root, bundle.items.runtime_contract);
-	const currentHead = readGitHead(gitRoot);
-	const commitCount = countIterationCommits(
-		gitRoot,
-		snapshot.git_head,
-		currentHead,
-	);
-	if (commitCount === null || Number.isNaN(commitCount)) {
-		return `could not verify commit policy ${policy} for this iteration`;
 	}
 
-	const relativeGitRoot = path.relative(bundle.root, gitRoot) || ".";
-	if (policy === "none" && commitCount !== 0) {
-		return `no commits are allowed in ${relativeGitRoot} for this iteration; observed ${commitCount}`;
-	}
-	if (policy === "exactly_one" && commitCount !== 1) {
-		return `exactly one commit must be created in ${relativeGitRoot} for this iteration; observed ${commitCount}`;
-	}
-	if (policy === "at_least_one" && commitCount < 1) {
-		return `at least one commit must be created in ${relativeGitRoot} for this iteration; observed ${commitCount}`;
+	const currentHead = readGitHead(bundle.root);
+	if (currentHead === snapshot.git_head) {
+		return "at least one commit must be created in the Ralph workspace root for this iteration";
 	}
 
 	return null;
@@ -143,7 +79,7 @@ export function evaluateBundleFileGate(
 	return (
 		evaluateProgressAppend(bundle, snapshot) ??
 		evaluateSourceDocs(bundle, snapshot) ??
-		evaluateCommitPolicy(bundle, snapshot)
+		evaluateCommitRequirement(bundle, snapshot)
 	);
 }
 
@@ -153,6 +89,6 @@ export function evaluateBundleCompleteFileGate(
 ): string | null {
 	return (
 		evaluateSourceDocs(bundle, snapshot) ??
-		evaluateCommitPolicy(bundle, snapshot)
+		evaluateCommitRequirement(bundle, snapshot)
 	);
 }

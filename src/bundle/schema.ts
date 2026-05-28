@@ -1,5 +1,3 @@
-import path from "node:path";
-
 import type { BundleItem, BundleItemsFile, RuntimeContract } from "./types.js";
 
 function fail(message: string): never {
@@ -43,40 +41,29 @@ function validateRuntimeContract(value: unknown): RuntimeContract {
 		});
 	}
 
-	if (value.commit_policy !== undefined) {
-		if (
-			value.commit_policy !== "none" &&
-			value.commit_policy !== "optional" &&
-			value.commit_policy !== "exactly_one" &&
-			value.commit_policy !== "at_least_one"
-		) {
-			fail(
-				"runtime_contract.commit_policy must be one of none, optional, exactly_one, at_least_one",
-			);
+	if (value.require_commit !== undefined) {
+		if (typeof value.require_commit !== "boolean") {
+			fail("runtime_contract.require_commit must be boolean");
 		}
-		contract.commit_policy = value.commit_policy;
+		contract.require_commit = value.require_commit;
+	}
+
+	if (value.commit_policy !== undefined) {
+		fail(
+			"runtime_contract.commit_policy is no longer supported; use require_commit instead",
+		);
 	}
 
 	if (value.git_root !== undefined) {
-		if (
-			typeof value.git_root !== "string" ||
-			value.git_root.length === 0 ||
-			path.isAbsolute(value.git_root)
-		) {
-			fail("runtime_contract.git_root must be a non-empty relative path");
-		}
-		const normalized = path.normalize(value.git_root);
-		if (normalized === ".." || normalized.startsWith(`..${path.sep}`)) {
-			fail("runtime_contract.git_root must not escape the workspace");
-		}
-		contract.git_root = value.git_root;
+		fail(
+			"runtime_contract.git_root is no longer supported; run Ralph from the workspace root instead",
+		);
 	}
 
 	for (const key of [
 		"require_progress_append",
 		"require_one_item_per_iteration",
 		"require_clean_source_docs",
-		"require_one_commit_per_iteration",
 	] as const) {
 		if (value[key] !== undefined) {
 			if (typeof value[key] !== "boolean")

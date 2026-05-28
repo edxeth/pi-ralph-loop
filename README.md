@@ -52,7 +52,9 @@ A raw Ralph loop can be one shell script. That works until you want to run it ov
 /skill:ralph-plan-writer Build the execution bundle for this goal: <goal>
 ```
 
-The skill writes:
+The skill asks where the Ralph plan should be created. The selected path becomes the Ralph workspace root: `.ralph/` lives there, work happens there, verification commands run there, and commits are counted there.
+
+It writes:
 
 ```text
 .ralph/plan.md
@@ -61,11 +63,13 @@ The skill writes:
 .ralph/progress.md
 ```
 
-Then run:
+Then run this from the Ralph workspace root:
 
 ```text
 /ralph-loop "@.ralph/prompt.md" --max-iterations=20
 ```
+
+If the skill was invoked from a different directory, start Pi in the selected Ralph workspace root before running the command.
 
 The plan writer reads the goal, optional PRD/SPEC files, repo state, git history, verification commands, and system constraints. Then it writes the facts Ralph needs into `.ralph/`.
 
@@ -146,8 +150,7 @@ Add `runtime_contract` when you want stricter gates:
     ],
     "require_progress_append": true,
     "require_one_item_per_iteration": true,
-    "commit_policy": "exactly_one",
-    "git_root": "."
+    "require_commit": true
   }
 }
 ```
@@ -159,11 +162,10 @@ Useful `runtime_contract` fields:
 | `verification_gates` | Commands Ralph runs before accepting `NEXT` or `COMPLETE`. |
 | `require_progress_append` | `NEXT` requires `.ralph/progress.md` to grow. |
 | `require_one_item_per_iteration` | `NEXT` requires exactly one item to move from `passes:false` to `passes:true`. |
-| `commit_policy` | `none`, `optional`, `exactly_one`, or `at_least_one`. |
-| `git_root` | Directory where Ralph snapshots and counts commits. Defaults to `.`. Use a relative path such as `discord-clone` when the git repo lives below the bundle root. |
+| `require_commit` | When `true`, `NEXT` and `COMPLETE` require git HEAD to change during the iteration. Omit or set `false` when commits are not required. |
 | `source_docs` + `require_clean_source_docs` | Optional file-protection gate. Omit unless you want Ralph to reject edits to listed files. |
 
-With bundle gates enabled, `NEXT` means one item passed and the required checks passed. `COMPLETE` means every item passed and the required checks passed. Rejected promises stay in the same session with a corrective prompt.
+`NEXT` means one item passed and the required checks passed, meaning it's time to move on to the next loop iteration. `COMPLETE` means every item passed and the required checks passed, hence the task and all its items are completed, no more work left to do. Rejected promises stay in the same session with a corrective prompt.
 
 ## Commands
 

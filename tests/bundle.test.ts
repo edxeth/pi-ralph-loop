@@ -38,7 +38,7 @@ function validItemsJson(): string {
 			require_progress_append: true,
 			require_one_item_per_iteration: true,
 			require_clean_source_docs: true,
-			require_one_commit_per_iteration: false,
+			require_commit: true,
 		},
 		items: [
 			{
@@ -74,8 +74,7 @@ test("parseBundleItemsJson accepts distilled-only runtime contracts", () => {
 				verification_gates: [],
 				require_progress_append: true,
 				require_one_item_per_iteration: true,
-				commit_policy: "exactly_one",
-				git_root: "discord-clone",
+				require_commit: true,
 			},
 			items: [
 				{
@@ -92,37 +91,50 @@ test("parseBundleItemsJson accepts distilled-only runtime contracts", () => {
 
 	assert.deepEqual(parsed.runtime_contract?.source_docs, []);
 	assert.equal(parsed.runtime_contract?.require_clean_source_docs, undefined);
-	assert.equal(parsed.runtime_contract?.commit_policy, "exactly_one");
-	assert.equal(parsed.runtime_contract?.git_root, "discord-clone");
+	assert.equal(parsed.runtime_contract?.require_commit, true);
 });
 
-test("parseBundleItemsJson rejects unsafe git_root values", () => {
-	const invalidGitRootBundle = (gitRoot: unknown) =>
-		JSON.stringify({
-			version: 1,
-			runtime_contract: { git_root: gitRoot },
-			items: [
-				{
-					category: "git-root",
-					description: "Validate the configured git root.",
-					steps: ["Load the bundle"],
-					passes: false,
-					regression_notes: "",
-				},
-			],
-		});
+test("parseBundleItemsJson rejects commit_policy", () => {
+	assert.throws(
+		() =>
+			parseBundleItemsJson(
+				JSON.stringify({
+					version: 1,
+					runtime_contract: { commit_policy: "exactly_one" },
+					items: [
+						{
+							category: "commit-contract",
+							description: "Use require_commit for commit enforcement.",
+							steps: ["Load the bundle"],
+							passes: false,
+							regression_notes: "",
+						},
+					],
+				}),
+			),
+		/commit_policy is no longer supported/,
+	);
+});
 
+test("parseBundleItemsJson rejects git_root", () => {
 	assert.throws(
-		() => parseBundleItemsJson(invalidGitRootBundle("")),
-		/git_root must be a non-empty relative path/,
-	);
-	assert.throws(
-		() => parseBundleItemsJson(invalidGitRootBundle("/tmp/project")),
-		/git_root must be a non-empty relative path/,
-	);
-	assert.throws(
-		() => parseBundleItemsJson(invalidGitRootBundle("../project")),
-		/git_root must not escape the workspace/,
+		() =>
+			parseBundleItemsJson(
+				JSON.stringify({
+					version: 1,
+					runtime_contract: { git_root: "." },
+					items: [
+						{
+							category: "workspace-root",
+							description: "Use the Ralph workspace root for commits.",
+							steps: ["Load the bundle"],
+							passes: false,
+							regression_notes: "",
+						},
+					],
+				}),
+			),
+		/git_root is no longer supported/,
 	);
 });
 

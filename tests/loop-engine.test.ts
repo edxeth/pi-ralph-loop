@@ -524,52 +524,27 @@ test("bundle NEXT accepts progress append", async () => {
 test("bundle NEXT rejects missing commit when required", async () => {
 	const h = createHarness();
 	initGitRepo(h.cwd);
-	writeBundleItems(h.cwd, [false], { require_one_commit_per_iteration: true });
+	writeBundleItems(h.cwd, [false], { require_commit: true });
 	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
 
 	await continueLoop(h.pi, h.ctx);
-	writeBundleItems(h.cwd, [true], { require_one_commit_per_iteration: true });
+	writeBundleItems(h.cwd, [true], { require_commit: true });
 	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
 
 	assert.equal(h.readState()?.iteration, 1);
 	assert.equal(h.newSessionCalls, 0);
-	assert.match(h.notifications.at(-1)?.message ?? "", /observed 0/);
+	assert.match(h.notifications.at(-1)?.message ?? "", /at least one commit/);
 });
 
-test("bundle NEXT accepts exactly one commit when required", async () => {
+test("bundle NEXT accepts commit when required", async () => {
 	const h = createHarness();
 	initGitRepo(h.cwd);
-	writeBundleItems(h.cwd, [false], { require_one_commit_per_iteration: true });
+	writeBundleItems(h.cwd, [false], { require_commit: true });
 	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
 
 	await continueLoop(h.pi, h.ctx);
-	writeBundleItems(h.cwd, [true], { require_one_commit_per_iteration: true });
+	writeBundleItems(h.cwd, [true], { require_commit: true });
 	commitAll(h.cwd, "complete item");
-	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
-
-	assert.equal(h.readState()?.iteration, 2);
-	await new Promise((r) => setTimeout(r, 600));
-	assert.equal(h.newSessionCalls, 1);
-});
-
-test("bundle NEXT accepts exactly one commit in configured git_root", async () => {
-	const h = createHarness();
-	const appRoot = join(h.cwd, "discord-clone");
-	mkdirSync(appRoot, { recursive: true });
-	initGitRepo(appRoot);
-	writeBundleItems(h.cwd, [false], {
-		commit_policy: "exactly_one",
-		git_root: "discord-clone",
-	});
-	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
-
-	await continueLoop(h.pi, h.ctx);
-	writeFileSync(join(appRoot, "app.txt"), "done\n");
-	commitAll(appRoot, "complete item in app repo");
-	writeBundleItems(h.cwd, [true], {
-		commit_policy: "exactly_one",
-		git_root: "discord-clone",
-	});
 	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
 
 	assert.equal(h.readState()?.iteration, 2);
@@ -579,14 +554,14 @@ test("bundle NEXT accepts exactly one commit in configured git_root", async () =
 
 test("bundle NEXT accepts first commit after git init when required", async () => {
 	const h = createHarness();
-	writeBundleItems(h.cwd, [false], { require_one_commit_per_iteration: true });
+	writeBundleItems(h.cwd, [false], { require_commit: true });
 	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
 
 	await continueLoop(h.pi, h.ctx);
 	git(h.cwd, ["init"]);
 	git(h.cwd, ["config", "user.email", "ralph@example.test"]);
 	git(h.cwd, ["config", "user.name", "Ralph Test"]);
-	writeBundleItems(h.cwd, [true], { require_one_commit_per_iteration: true });
+	writeBundleItems(h.cwd, [true], { require_commit: true });
 	commitAll(h.cwd, "complete first item");
 	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
 
@@ -595,34 +570,16 @@ test("bundle NEXT accepts first commit after git init when required", async () =
 	assert.equal(h.newSessionCalls, 1);
 });
 
-test("bundle NEXT rejects multiple commits when exactly_one is required", async () => {
+test("bundle NEXT accepts multiple commits when commit is required", async () => {
 	const h = createHarness();
 	initGitRepo(h.cwd);
-	writeBundleItems(h.cwd, [false], { commit_policy: "exactly_one" });
+	writeBundleItems(h.cwd, [false], { require_commit: true });
 	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
 
 	await continueLoop(h.pi, h.ctx);
 	writeFileSync(join(h.cwd, "first.txt"), "first\n");
 	commitAll(h.cwd, "first commit");
-	writeBundleItems(h.cwd, [true], { commit_policy: "exactly_one" });
-	commitAll(h.cwd, "second commit");
-	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
-
-	assert.equal(h.readState()?.iteration, 1);
-	assert.equal(h.newSessionCalls, 0);
-	assert.match(h.notifications.at(-1)?.message ?? "", /observed 2/);
-});
-
-test("bundle NEXT accepts multiple commits when at_least_one is required", async () => {
-	const h = createHarness();
-	initGitRepo(h.cwd);
-	writeBundleItems(h.cwd, [false], { commit_policy: "at_least_one" });
-	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
-
-	await continueLoop(h.pi, h.ctx);
-	writeFileSync(join(h.cwd, "first.txt"), "first\n");
-	commitAll(h.cwd, "first commit");
-	writeBundleItems(h.cwd, [true], { commit_policy: "at_least_one" });
+	writeBundleItems(h.cwd, [true], { require_commit: true });
 	commitAll(h.cwd, "second commit");
 	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
 
@@ -631,30 +588,14 @@ test("bundle NEXT accepts multiple commits when at_least_one is required", async
 	assert.equal(h.newSessionCalls, 1);
 });
 
-test("bundle NEXT rejects commits when none is required", async () => {
+test("bundle NEXT allows no commit when not required", async () => {
 	const h = createHarness();
 	initGitRepo(h.cwd);
-	writeBundleItems(h.cwd, [false], { commit_policy: "none" });
+	writeBundleItems(h.cwd, [false], { require_commit: false });
 	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
 
 	await continueLoop(h.pi, h.ctx);
-	writeBundleItems(h.cwd, [true], { commit_policy: "none" });
-	commitAll(h.cwd, "unexpected commit");
-	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
-
-	assert.equal(h.readState()?.iteration, 1);
-	assert.equal(h.newSessionCalls, 0);
-	assert.match(h.notifications.at(-1)?.message ?? "", /no commits are allowed/);
-});
-
-test("bundle NEXT allows any commit count when optional", async () => {
-	const h = createHarness();
-	initGitRepo(h.cwd);
-	writeBundleItems(h.cwd, [false], { commit_policy: "optional" });
-	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
-
-	await continueLoop(h.pi, h.ctx);
-	writeBundleItems(h.cwd, [true], { commit_policy: "optional" });
+	writeBundleItems(h.cwd, [true], { require_commit: false });
 	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
 
 	assert.equal(h.readState()?.iteration, 2);

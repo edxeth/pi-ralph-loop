@@ -10,6 +10,7 @@ import {
 } from "./loop/bundle-gates.js";
 import { rejectBundlePromise } from "./loop/bundle-rejections.js";
 import {
+	clearCommandCtx,
 	createFreshSession,
 	getCommandCtx,
 	setCommandCtx,
@@ -200,6 +201,22 @@ function handleStopPromise(ctx: ExtensionContext, state: RalphLoopState): void {
 	finalizeLoop(ctx, ctx.cwd, "manual_stop", state.error_count);
 }
 
+function finalizeTransitionError(
+	cwd: string,
+	errorCount: number,
+): void {
+	updateState(cwd, {
+		running: false,
+		completed_at: new Date().toISOString(),
+		stop_reason: "error",
+		error_count: errorCount,
+		transitioning: false,
+		cancel_requested: false,
+		stop_requested: false,
+	});
+	clearCommandCtx();
+}
+
 function scheduleInitialSessionTransition(
 	ctx: ExtensionCommandContext,
 	cwd: string,
@@ -209,14 +226,10 @@ function scheduleInitialSessionTransition(
 		try {
 			const result = await createFreshSession(ctx);
 			if (result.cancelled) {
-				finalizeLoop(ctx, cwd, "user_cancelled", errorCount);
+				finalizeTransitionError(cwd, errorCount);
 			}
-		} catch (err) {
-			ctx.ui.notify(
-				`Ralph loop error during initial session transition: ${err instanceof Error ? err.message : String(err)}`,
-				"error",
-			);
-			finalizeLoop(ctx, cwd, "error", errorCount);
+		} catch {
+			finalizeTransitionError(cwd, errorCount);
 		}
 	}, 0);
 	timeout.unref?.();
@@ -239,14 +252,10 @@ function scheduleNextIteration(
 		try {
 			const result = await createFreshSession(cmdCtx);
 			if (result.cancelled) {
-				finalizeLoop(ctx, ctx.cwd, "user_cancelled", state.error_count);
+				finalizeTransitionError(cmdCtx.cwd, state.error_count);
 			}
-		} catch (err) {
-			ctx.ui.notify(
-				`Ralph loop error during session transition: ${err instanceof Error ? err.message : String(err)}`,
-				"error",
-			);
-			finalizeLoop(ctx, ctx.cwd, "error", state.error_count);
+		} catch {
+			finalizeTransitionError(cmdCtx.cwd, state.error_count);
 		}
 	}, ITERATION_DELAY_MS);
 	timeout.unref?.();
@@ -495,8 +504,8 @@ export async function runLoop(
 	const firstIteration = options.startIteration ?? 1;
 	const startedAt = options.startedAt ?? new Date().toISOString();
 	const initialErrorCount = options.initialErrorCount ?? 0;
-	const reuseCurrentSession = options.reuseCurrentSession === true;
 	const bundleMode = options.bundleMode === true;
+	const reuseCurrentSession = options.reuseCurrentSession === true;
 
 	const initialState: RalphLoopState = {
 		running: true,

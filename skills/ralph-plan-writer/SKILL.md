@@ -53,9 +53,30 @@ What should I plan for the Ralph loop?
 
 ## Before writing the bundle
 
-Do not generate a Ralph bundle from vague context. If the goal, PRD, SPEC, repo state, or verification path is unclear, gather more information before writing the four files.
+Do not generate a Ralph bundle from vague context. If the goal, PRD, SPEC, repo state, Ralph workspace root, or verification path is unclear, gather more information before writing the four files.
 
 Use the tools and skills available in the current session: inspect the codebase, read related docs, check package scripts and tests, inspect recent git history, research third-party APIs or platform behavior when needed, and ask the user when ambiguity affects scope or correctness. Iterating on assumptions and plan shape before writing `.ralph/` files is good; the final bundle must be self-contained and stable.
+
+## Ralph workspace root
+
+Choose one path before writing files.
+
+Ask the user when the target path is not explicit:
+
+```text
+Where should the Ralph plan be created?
+
+1. Current workspace
+2. Another path
+```
+
+The chosen path is the Ralph workspace root. Write `.ralph/` there. Read package metadata, docs, source files, git history, and verification commands there. The runtime agent works there. Ralph counts required commits there. The user runs `/ralph-loop "@.ralph/prompt.md"` there.
+
+If the user chooses another path, resolve it to an absolute path and write `[RALPH_WORKSPACE_ROOT]/.ralph/*`. Do not write `.ralph/` in the invocation directory unless the user chose that directory.
+
+Ignore the invocation directory when it differs from `[RALPH_WORKSPACE_ROOT]`. Name the target project only from files under `[RALPH_WORKSPACE_ROOT]`. If those files do not prove a package or app name, describe the work by path and outcome.
+
+Do not add another path field for commits, work, or bundle location.
 
 ## Source docs
 
@@ -144,6 +165,8 @@ Use this header skeleton:
 
 Include source input type, assumptions, platform/topology constraints when relevant, and completion criteria. Reference `.ralph/items.json` as the source of truth for item status.
 
+Write this file as an execution note. Use short factual sentences with paths, commands, constraints, and acceptance criteria. Do not write marketing copy, rhetorical setups, formulaic contrasts, em dashes, or vague project claims. Name the project only from files under the Ralph workspace root. Do not invent license, install, API, or package-manager facts that files under the Ralph workspace root do not prove.
+
 ## `.ralph/items.json`
 
 Generate valid JSON with this shape:
@@ -158,8 +181,7 @@ Generate valid JSON with this shape:
     ],
     "require_progress_append": true,
     "require_one_item_per_iteration": true,
-    "commit_policy": "exactly_one",
-    "git_root": "."
+    "require_commit": true
   },
   "items": [
     {
@@ -179,17 +201,16 @@ Rules:
 - Keep `source_docs` empty for distilled-only bundles.
 - Put PRD/SPEC paths in `source_docs` only for provenance/protection mode.
 - Put every required verification command in `verification_gates`.
+- Use commands exactly as they should run. Do not use `|| true`, output suppression, skipped checks, or commands that mask failures.
+- Do not put long-running commands directly in `verification_gates`. Bad examples: `npm run dev`, `vite --host`, `next dev`, `astro dev`, `wrangler dev`, `rails server`, `python -m http.server`, `docker compose up`, `tail -f`, and watcher commands such as `npm run test -- --watch`. Use build/test commands, or a bounded smoke script that starts the service, probes it, cleans it up, and exits with the probe status.
 - Use empty `verification_gates` only when the repo has no executable verification command. Record that limit in `.ralph/plan.md` and `.ralph/prompt.md`.
 - Set `require_progress_append` and `require_one_item_per_iteration` to `true`.
 - Omit `require_clean_source_docs` by default.
 - Set `require_clean_source_docs` to `true` only for explicit provenance/protection mode with non-empty `source_docs`.
-- Set `commit_policy` to one of: `none`, `optional`, `exactly_one`, `at_least_one`.
-- Use `exactly_one` for normal one-item feature loops.
-- Use `at_least_one` when an item may need checkpoint commits.
-- Use `optional` for exploratory or patch-only loops.
-- Use `none` for read-only, audit, or reporting loops where commits would be wrong.
-- Set `git_root` when commits should be counted outside the `.ralph/` workspace root. Use `"."` when the bundle root owns git. Use a relative subdirectory such as `"discord-clone"` when the runtime agent initializes and commits inside that app directory.
-- For greenfield loops with commit enforcement, tell the runtime agent to initialize git in `runtime_contract.git_root` during the first iteration.
+- Set `require_commit` to `true` for normal implementation loops.
+- Use `require_commit: false` for read-only, audit, reporting loops, or any bundle where commits would be wrong or no git repo should be required.
+- Do not write `commit_policy` or `git_root`. Ralph checks whether git HEAD changed in the Ralph workspace root. It does not count commits.
+- For greenfield loops with `require_commit: true`, tell the runtime agent to initialize git in the Ralph workspace root during the first iteration.
 - Do not delete items after creation.
 - Do not rewrite `description` or `steps` after creation.
 - Move `passes` to `true` only after end-to-end verification.
@@ -219,21 +240,24 @@ Instruct the runtime agent to:
 - update `.ralph/items.json` by changing `passes` and `regression_notes` only
 - append one `.ralph/progress.md` entry with the item, decision rationale, changed files, verification results, and next-iteration notes
 - preserve files listed in `runtime_contract.source_docs` unless the user allowed edits
-- follow `runtime_contract.commit_policy`; initialize git in `runtime_contract.git_root` during the first iteration when commits are required and no git repo exists
+- follow `runtime_contract.require_commit`; initialize git in the Ralph workspace root during the first iteration when commits are required and no git repo exists
+- when commits are required, commit after verification and bundle-state updates
+- stage only the files needed for the selected item and the required `.ralph/items.json` / `.ralph/progress.md` state updates; do not stage `.ralph/loop.md`
 - end with one promise tag on the last non-empty line
 
 Promise rules:
 
-- Emit `<promise>NEXT</promise>` only after one item passes, all required checks pass, progress was appended, listed source docs stayed clean when `source_docs` is non-empty, and the commit policy was satisfied.
+- Emit `<promise>NEXT</promise>` only after one item passes, all required checks pass, progress was appended, listed source docs stayed clean when `source_docs` is non-empty, and the commit requirement was satisfied.
 - Emit `<promise>COMPLETE</promise>` only after every item passes and all required checks pass. If COMPLETE only verifies an already-finished bundle, it does not need to append progress.
 
 Terminal boundary rules:
 
 - Treat a valid promise tag as the handoff to the loop harness, not as a progress report.
 - As soon as the selected item is marked passing in the current invocation, stop implementation work. From that point, only finalize the same iteration.
-- Finalizing the same iteration means only: run required verification gates, update `.ralph/items.json`, append `.ralph/progress.md`, satisfy `runtime_contract.commit_policy`, verify the commit state when commits are required, and emit the required promise tag.
+- Finalizing the same iteration means only: run required verification gates, update `.ralph/items.json`, append `.ralph/progress.md`, satisfy `runtime_contract.require_commit`, verify the commit state when commits are required, and emit the required promise tag.
 - While finalizing the same iteration, do not choose another item, plan another item, inspect files for another item, edit source files for another item, update any secondary task tracker for another item, or explain what comes next.
 - The final response for a successful one-item iteration must be exactly one promise tag on the last non-empty line.
+- Use plain execution prose in progress entries. Avoid marketing copy, rhetorical setups, formulaic contrasts, and vague project claims.
 
 Boundary example:
 
@@ -246,18 +270,28 @@ Ban bypasses in the runtime prompt: no skipped checks, weakened tests, `--no-ver
 
 ## Runtime enforcement to account for
 
-The extension rejects NEXT if zero or multiple items move from `passes:false` to `passes:true`, immutable item fields change, progress append checks fail, listed source docs change when `source_docs` is non-empty, configured verification gates fail, or the configured commit policy fails in `runtime_contract.git_root`.
+The extension rejects NEXT if zero or multiple items move from `passes:false` to `passes:true`, immutable item fields change, progress append checks fail, listed source docs change when `source_docs` is non-empty, configured verification gates fail, or `require_commit: true` is set and git HEAD did not change in the Ralph workspace root.
 
-The extension rejects COMPLETE if any item has `passes:false`, immutable item fields change, progress checks fail, listed source docs change when `source_docs` is non-empty, verification gates fail, or the configured commit policy fails in `runtime_contract.git_root`.
+The extension rejects COMPLETE if any item has `passes:false`, immutable item fields change, progress checks fail, listed source docs change when `source_docs` is non-empty, verification gates fail, or `require_commit: true` is set and git HEAD did not change in the Ralph workspace root.
 
 Rejected promises continue in the same session with a corrective prompt. Accepted NEXT starts the next fresh session. The current runtime agent must not start the next item itself. Accepted COMPLETE ends the loop.
 
 ## Final response
 
-After writing the four files, respond with exactly this shape and no extra commentary:
+Choose `n` for `--max-iterations` as the maximum number of Ralph loop iterations to allow. Base it on the number of unfinished items plus expected retry risk.
+
+If the Ralph workspace root is the current workspace, respond with exactly this shape and no extra commentary:
 
 ```text
 /ralph-loop "@.ralph/prompt.md" --max-iterations=n
 ```
 
-Choose a bounded `n` from the item count and expected iteration risk.
+If the Ralph workspace root is a different path, respond with exactly this shape and no extra commentary:
+
+```text
+Run this from `[RALPH_WORKSPACE_ROOT]`:
+
+/ralph-loop "@.ralph/prompt.md" --max-iterations=n
+```
+
+Do not write status text such as `All four files are written` or `One item, one iteration needed`. Do not summarize the files you wrote. Do not include a table, bullet list, explanation, or fenced command block in the final response. Do not add any extra text before or after the required response shape.

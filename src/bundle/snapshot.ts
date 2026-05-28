@@ -10,12 +10,7 @@ import {
 import path from "node:path";
 
 import { resolveWorkspacePath } from "./paths.js";
-import type {
-	BundleItem,
-	BundleSnapshot,
-	RalphBundle,
-	RuntimeContract,
-} from "./types.js";
+import type { BundleItem, BundleSnapshot, RalphBundle } from "./types.js";
 
 function fail(message: string): never {
 	throw new Error(`Invalid Ralph bundle: ${message}`);
@@ -41,13 +36,6 @@ function snapshotItems(items: BundleItem[]): Array<{
 		steps: item.steps,
 		passes: item.passes,
 	}));
-}
-
-export function resolveGitRoot(
-	bundleRoot: string,
-	contract: RuntimeContract | undefined,
-): string {
-	return resolveWorkspacePath(bundleRoot, contract?.git_root ?? ".");
 }
 
 export function readGitHead(root: string): string | null {
@@ -94,9 +82,7 @@ export function createBundleSnapshot(bundle: RalphBundle): BundleSnapshot {
 		bundle.root,
 		bundle.items.runtime_contract?.source_docs,
 	);
-	const gitHead = readGitHead(
-		resolveGitRoot(bundle.root, bundle.items.runtime_contract),
-	);
+	const gitHead = readGitHead(bundle.root);
 	const progressSize = statSync(bundle.files[".ralph/progress.md"]).size;
 
 	return {

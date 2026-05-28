@@ -19,18 +19,13 @@ export type VerificationGate = {
 	command: string;
 };
 
-export type CommitPolicy = "none" | "optional" | "exactly_one" | "at_least_one";
-
 export type RuntimeContract = {
 	source_docs?: string[];
 	verification_gates?: VerificationGate[];
 	require_progress_append?: boolean;
 	require_one_item_per_iteration?: boolean;
 	require_clean_source_docs?: boolean;
-	commit_policy?: CommitPolicy;
-	git_root?: string;
-	/** @deprecated Use commit_policy instead. */
-	require_one_commit_per_iteration?: boolean;
+	require_commit?: boolean;
 };
 
 export type BundleItemsFile = {
