@@ -99,6 +99,38 @@ function findLastAssistantMessage(
 	return null;
 }
 
+type BranchMessageEntry = {
+	type?: string;
+	message?: { role?: string; content?: unknown };
+};
+
+/**
+ * Inspect the current session branch for resume routing: the most recent
+ * assistant message (if any) and whether the session holds any prior turn.
+ * A session that already has turns has already consumed its seed prompt.
+ */
+function readSessionTurns(ctx: ExtensionContext): {
+	lastAssistant: { content?: unknown } | null;
+	hasTurns: boolean;
+} {
+	const sessionManager = ctx.sessionManager as unknown as {
+		getBranch?: () => BranchMessageEntry[];
+	};
+	const branch =
+		typeof sessionManager.getBranch === "function"
+			? sessionManager.getBranch()
+			: [];
+	let lastAssistant: { content?: unknown } | null = null;
+	let hasTurns = false;
+	for (const entry of branch) {
+		if (entry?.type !== "message" || !entry.message) continue;
+		const role = entry.message.role;
+		if (role === "assistant" || role === "user") hasTurns = true;
+		if (role === "assistant") lastAssistant = entry.message;
+	}
+	return { lastAssistant, hasTurns };
+}
+
 function handleRequestedStop(
 	ctx: ExtensionContext,
 	state: RalphLoopState,
@@ -446,7 +478,6 @@ export async function runLoop(
 	const startedAt = options.startedAt ?? new Date().toISOString();
 	const initialErrorCount = options.initialErrorCount ?? 0;
 	const bundleMode = options.bundleMode === true;
-	const reuseCurrentSession = options.reuseCurrentSession === true;
 
 	const initialState: RalphLoopState = {
 		running: true,
@@ -458,7 +489,7 @@ export async function runLoop(
 		session_id: "",
 		last_session_file: null,
 		error_count: initialErrorCount,
-		transitioning: !reuseCurrentSession,
+		transitioning: true,
 		cancel_requested: false,
 		stop_requested: false,
 		bundle_mode: bundleMode,
@@ -485,12 +516,80 @@ export async function runLoop(
 
 	ctx.ui.notify(`Ralph loop started (max ${maxIterations} iterations)`, "info");
 
-	if (reuseCurrentSession) {
-		startIteration(pi, ctx, initialState, task);
+	scheduleInitialSessionTransition(ctx, cwd, initialErrorCount);
+}
+
+/**
+ * Resume a stopped loop inside the session that already owns it.
+ *
+ * The seed prompt is delivered exactly once per session, at iteration start.
+ * Re-sending it here would make the agent start a brand new unit of work, so
+ * instead we re-activate the loop and decide what the session actually needs
+ * from its last assistant turn:
+ *
+ * - COMPLETE / STOP already emitted  -> finalize the loop (route, don't nudge).
+ * - NEXT already emitted             -> the unit is done; advance the iteration
+ *                                        and open a fresh session.
+ * - no promise but the session has
+ *   prior turns                      -> nudge "continue" to finish the unit.
+ * - empty session (no prior turns)   -> seed the prompt once.
+ *
+ * Bundle promises validate against the pre-iteration snapshot preserved in
+ * loop.md (and the in-memory store when this is the same process), so this
+ * path must not re-snapshot the already-mutated working tree.
+ */
+export async function resumeCurrentSession(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+): Promise<void> {
+	const saved = readState(ctx.cwd);
+	const task = getTaskBody(ctx.cwd);
+	if (!saved || !task) {
+		ctx.ui.notify("No resumable Ralph loop state found in .ralph/loop.md", "error");
 		return;
 	}
 
-	scheduleInitialSessionTransition(ctx, cwd, initialErrorCount);
+	setCommandCtx(ctx);
+	resetIterationCounters();
+
+	updateState(ctx.cwd, {
+		running: true,
+		transitioning: false,
+		cancel_requested: false,
+		stop_requested: false,
+		completed_at: null,
+		stop_reason: null,
+		session_id: ctx.sessionManager.getSessionId(),
+		last_session_file: ctx.sessionManager.getSessionFile() ?? null,
+	});
+	const state = readState(ctx.cwd);
+	if (!state) return;
+
+	const { lastAssistant, hasTurns } = readSessionTurns(ctx);
+	const promise = extractControlPromise(lastAssistant);
+	if (promise === "COMPLETE") {
+		handleCompletePromise(pi, ctx, state);
+		return;
+	}
+	if (promise === "STOP") {
+		handleStopPromise(ctx, state);
+		return;
+	}
+	if (promise === "NEXT") {
+		handleNextPromise(pi, ctx, state);
+		return;
+	}
+
+	if (hasTurns) {
+		setLoopStatus(ctx, state.iteration, state.max_iterations);
+		pi.setSessionName(
+			`Ralph loop iteration ${state.iteration}/${state.max_iterations}`,
+		);
+		sendWhenIdle(pi, ctx, "continue");
+		return;
+	}
+
+	startIteration(pi, ctx, state, task);
 }
 
 /**

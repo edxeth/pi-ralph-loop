@@ -5,6 +5,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	writeFileSync,
 } from "node:fs";
@@ -23,6 +24,16 @@ type RpcHarness = {
 	sendPrompt: (message: string) => void;
 	waitForState: (matcher: RegExp, timeoutMs?: number) => Promise<string>;
 	waitForFinalState: (matcher: RegExp, timeoutMs?: number) => Promise<string>;
+	readStateText: () => string;
+	stateField: (text: string, key: string) => string | null;
+	editState: (replacer: (text: string) => string) => void;
+	listSessions: () => string[];
+	userTexts: (file: string | null) => string[];
+	waitForUserTextCount: (
+		file: string,
+		min: number,
+		timeoutMs?: number,
+	) => Promise<string[]>;
 	stop: () => Promise<void>;
 };
 
@@ -102,9 +113,60 @@ function createRpcHarness(
 	const rl = readline.createInterface({ input: child.stdout });
 	rl.on("line", () => {});
 
+	const readStateText = () =>
+		existsSync(statePath) ? readFileSync(statePath, "utf8") : "";
+	const stateField = (text: string, key: string): string | null => {
+		const m = text.match(new RegExp(`${key}:\\s*(?:"([^"]*)"|([^\\n]*))`));
+		return m ? (m[1] ?? m[2] ?? "").trim() : null;
+	};
+	const listSessions = () =>
+		readdirSync(sessionDir)
+			.filter((f) => f.endsWith(".jsonl"))
+			.map((f) => join(sessionDir, f));
+	const userTexts = (file: string | null): string[] => {
+		if (!file || !existsSync(file)) return [];
+		const out: string[] = [];
+		for (const line of readFileSync(file, "utf8").split("\n")) {
+			if (!line.trim()) continue;
+			let entry: unknown;
+			try {
+				entry = JSON.parse(line);
+			} catch {
+				continue;
+			}
+			const e = entry as {
+				type?: string;
+				message?: { role?: string; content?: unknown };
+			};
+			if (e?.type !== "message" || e.message?.role !== "user") continue;
+			const c = e.message.content;
+			const text =
+				typeof c === "string"
+					? c
+					: Array.isArray(c)
+						? c
+								.map((b) =>
+									b && typeof b === "object" && (b as { type?: string }).type === "text"
+										? ((b as { text?: string }).text ?? "")
+										: "",
+								)
+								.join("")
+						: "";
+			out.push(text.trim());
+		}
+		return out;
+	};
+
 	return {
 		workdir,
 		sessionDir,
+		readStateText,
+		stateField,
+		listSessions,
+		userTexts,
+		editState(replacer: (text: string) => string) {
+			writeFileSync(statePath, replacer(readFileSync(statePath, "utf8")), "utf8");
+		},
 		sendPrompt(message: string) {
 			child.stdin.write(`${JSON.stringify({ type: "prompt", message })}\n`);
 		},
@@ -123,6 +185,17 @@ function createRpcHarness(
 			return this.waitForState(
 				new RegExp(`running:\\s*false[\\s\\S]*${matcher.source}`),
 				timeoutMs,
+			);
+		},
+		async waitForUserTextCount(file: string, min: number, timeoutMs = 90_000) {
+			const deadline = Date.now() + timeoutMs;
+			while (Date.now() < deadline) {
+				const texts = userTexts(file);
+				if (texts.length >= min) return texts;
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			}
+			throw new Error(
+				`Timed out waiting for >= ${min} user messages in ${file}`,
 			);
 		},
 		async stop() {
@@ -289,6 +362,117 @@ test("live pi RPC: recovers from a provider error via Pi's auto-retry", {
 		// The provider error was seen and counted, but recovery still completed.
 		assert.match(state, /error_count:\s*1/);
 		assert.doesNotMatch(state, /stop_reason:\s*"error"/);
+	} finally {
+		await h.stop();
+	}
+});
+
+// ── /ralph-resume same-session routing (reuse path) ─────────────────────
+// These exercise the three reuse-path conditions through the real runtime:
+// the seed prompt must be delivered exactly once per session, so resume must
+// either route an already-emitted promise or nudge "continue" — never re-seed.
+
+test("live pi RPC: resume re-finalizes an already-emitted COMPLETE without re-seeding", {
+	skip: !SHOULD_RUN,
+}, async () => {
+	const h = createRpcHarness();
+	try {
+		h.sendPrompt(
+			'/ralph-loop "Read .ralph/loop.md frontmatter for iteration n. Reply with EXACTLY two lines: first \\"Iteration <n>\\", second \\"<promise>COMPLETE</promise>\\". No code fences." --max-iterations=3',
+		);
+		const s = await h.waitForFinalState(/stop_reason:\s*"complete"/);
+		const session = h.stateField(s, "last_session_file");
+		assert.ok(session, "expected a session file in state");
+		const before = h.userTexts(session).length;
+
+		h.sendPrompt("/ralph-resume --force");
+		await new Promise((resolve) => setTimeout(resolve, 8000));
+
+		const after = h.userTexts(session).length;
+		assert.equal(after, before, "resume must not re-seed the prompt");
+		assert.match(h.readStateText(), /stop_reason:\s*"complete"/);
+		assert.match(h.readStateText(), /running:\s*false/);
+	} finally {
+		await h.stop();
+	}
+});
+
+test("live pi RPC: resume advances on an already-emitted NEXT and opens a fresh session", {
+	skip: !SHOULD_RUN,
+}, async () => {
+	const h = createRpcHarness();
+	try {
+		h.sendPrompt(
+			'/ralph-loop "Reply with EXACTLY two lines and nothing else: first \\"Iteration done\\", second \\"<promise>NEXT</promise>\\". No code fences." --max-iterations=1',
+		);
+		const s = await h.waitForFinalState(/stop_reason:\s*"max_iterations"/);
+		const session = h.stateField(s, "last_session_file");
+		assert.ok(session);
+		const seedCount = h.userTexts(session).length;
+		const sessionsBefore = h.listSessions().length;
+
+		// Realistic resume: raise the cap, then continue the saved iteration.
+		h.editState((t) => t.replace(/max_iterations:\s*1/, "max_iterations: 2"));
+		h.sendPrompt("/ralph-resume");
+		const s2 = await h.waitForState(
+			/running:\s*false[\s\S]*iteration:\s*2/,
+		);
+
+		assert.match(s2, /iteration:\s*2/);
+		assert.equal(
+			h.listSessions().length,
+			sessionsBefore + 1,
+			"NEXT on resume must open a fresh session",
+		);
+		assert.equal(
+			h.userTexts(session).length,
+			seedCount,
+			"resume must not re-seed the original session",
+		);
+	} finally {
+		await h.stop();
+	}
+});
+
+test("live pi RPC: resume nudges 'continue' when no promise was emitted yet", {
+	skip: !SHOULD_RUN,
+}, async () => {
+	const h = createRpcHarness();
+	try {
+		// A prompt that never emits a promise gets nudged with "continue". We let
+		// exactly one nudge land (proving a no-promise turn happened), then stop the
+		// loop cleanly so the saved session ends mid-work with no promise on its
+		// last turn -- the State B precondition, without burning the 5-nudge budget.
+		h.sendPrompt(
+			'/ralph-loop "Reply with exactly one short sentence about the weather. Do not output any promise tag." --max-iterations=1',
+		);
+		const started = await h.waitForState(
+			/running:\s*true[\s\S]*iteration:\s*1[\s\S]*transitioning:\s*false/,
+		);
+		const session = h.stateField(started, "last_session_file");
+		assert.ok(session);
+		// Wait until at least one "continue" nudge has been appended (a no-promise
+		// turn was observed), then request a clean stop.
+		await h.waitForUserTextCount(session, 2, 120_000);
+		h.sendPrompt("/ralph-stop");
+		const stopped = await h.waitForFinalState(/stop_reason:\s*"manual_stop"/, 120_000);
+		assert.equal(h.stateField(stopped, "last_session_file"), session);
+		const before = h.userTexts(session);
+		const seedCount = before.filter((t) => t.includes("about the weather")).length;
+
+		h.sendPrompt("/ralph-resume");
+		const after = await h.waitForUserTextCount(session, before.length + 1);
+
+		assert.equal(
+			after[before.length],
+			"continue",
+			"resume must nudge continue, not re-seed the prompt",
+		);
+		assert.equal(
+			after.filter((t) => t.includes("about the weather")).length,
+			seedCount,
+			"resume must never re-seed the prompt",
+		);
 	} finally {
 		await h.stop();
 	}

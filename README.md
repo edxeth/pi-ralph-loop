@@ -177,6 +177,8 @@ Start a loop. Default max iterations: `100`.
 
 Resume the saved loop from `.ralph/loop.md`. Use `--force` to resume a completed run.
 
+Resume adapts to where it runs. From the same Pi session that owns the saved iteration, it does not re-send the prompt (the agent already has it). Instead it reads the last assistant turn: if a promise was already emitted, it acts on it (`COMPLETE`/`STOP` end the loop, `NEXT` advances to the next fresh iteration); if no promise was emitted yet, it nudges `continue` so the agent finishes the in-progress unit. From any other session, it restarts the saved iteration in a fresh session.
+
 ### `/ralph-restart`
 
 Restart the saved loop from iteration 1 with the same prompt and max-iteration limit.

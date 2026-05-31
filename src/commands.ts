@@ -6,7 +6,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { loadRalphBundle } from "./bundle/index.js";
-import { runLoop } from "./loop-engine.js";
+import { resumeCurrentSession, runLoop } from "./loop-engine.js";
 import { parseArgs } from "./parser.js";
 import { getTaskBody, readState, updateState } from "./state.js";
 
@@ -172,11 +172,16 @@ async function handleResumeCommand(
 	const reuseCurrentSession =
 		Boolean(state.session_id) && currentSessionId === state.session_id;
 	ctx.ui.notify(formatResumeNotification(state, reuseCurrentSession), "info");
+
+	if (reuseCurrentSession) {
+		await resumeCurrentSession(pi, ctx);
+		return;
+	}
+
 	await runLoop(pi, ctx, task, state.max_iterations, {
 		startIteration: state.iteration,
 		startedAt: state.started_at || new Date().toISOString(),
 		initialErrorCount: state.error_count,
-		reuseCurrentSession,
 		bundleMode: state.bundle_mode,
 	});
 }
@@ -214,7 +219,6 @@ async function handleRestartCommand(
 		startIteration: 1,
 		startedAt: new Date().toISOString(),
 		initialErrorCount: 0,
-		reuseCurrentSession: false,
 		bundleMode: state.bundle_mode,
 	});
 }
@@ -266,7 +270,7 @@ export function registerCommands(pi: ExtensionAPI): void {
 
 	pi.registerCommand("ralph-resume", {
 		description:
-			"Resume a saved Ralph loop from .ralph/loop.md. Completed loops require --force. If run from the saved iteration session, it continues that chat; otherwise it restarts the saved iteration in a fresh session.",
+			"Resume a saved Ralph loop from .ralph/loop.md. Completed loops require --force. From the session that owns the saved iteration, it resumes in place without re-sending the prompt (acting on an already-emitted promise or nudging continue); from any other session, it restarts the saved iteration in a fresh session.",
 		handler: handleResumeCommand.bind(null, pi),
 	});
 

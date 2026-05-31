@@ -11,6 +11,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { registerCommands } from "../src/commands.ts";
+import { createBundleSnapshot, loadRalphBundle } from "../src/bundle/index.ts";
 import { readState, writeState } from "../src/state.ts";
 import type { RalphLoopState } from "../src/types.ts";
 
@@ -50,12 +51,22 @@ function makeCommandsState(
 	return { ...baseState, ...overrides };
 }
 
+type BranchEntry = {
+	type: "message";
+	message: {
+		role: "assistant" | "user";
+		content: Array<{ type: "text"; text: string }>;
+	};
+};
+
 function createCommandsHarness() {
 	const cwd = mkdtempSync(join(tmpdir(), "ralph-commands-"));
 	const commands = new Map<string, CommandDef>();
 	const notifications: Array<{ message: string; type: string }> = [];
 	const sentMessages: string[] = [];
+	const branch: BranchEntry[] = [];
 	let newSessionCount = 0;
+	let idle = true;
 
 	const pi = {
 		registerCommand(name: string, command: CommandDef) {
@@ -78,9 +89,11 @@ function createCommandsHarness() {
 			setWorkingVisible(_visible: boolean) {},
 			setStatus(_key: string, _value: string | undefined) {},
 		},
+		isIdle: () => idle,
 		sessionManager: {
 			getSessionId: () => "session-1",
 			getSessionFile: () => "/sessions/session-1.jsonl",
+			getBranch: () => branch,
 		},
 		newSession() {
 			newSessionCount++;
@@ -95,6 +108,21 @@ function createCommandsHarness() {
 		sentMessages,
 		ctx,
 		getNewSessionCount: () => newSessionCount,
+		setIdle: (value: boolean) => {
+			idle = value;
+		},
+		pushAssistant: (text: string) => {
+			branch.push({
+				type: "message",
+				message: { role: "assistant", content: [{ type: "text", text }] },
+			});
+		},
+		pushUser: (text: string) => {
+			branch.push({
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text }] },
+			});
+		},
 	};
 }
 
@@ -250,7 +278,221 @@ test("ralph-resume preserves saved bundle mode", async () => {
 	await h.commands.get("ralph-resume")?.handler("", h.ctx);
 
 	assert.equal(readState(h.cwd)?.bundle_mode, true);
+	// Empty session (no prior turns) -> seed the prompt once.
 	assert.deepEqual(h.sentMessages, ["bundle prompt"]);
+});
+
+test("ralph-resume in same session does not re-seed when work is in progress", async () => {
+	const h = createCommandsHarness();
+	writeState(
+		h.cwd,
+		makeCommandsState({
+			running: false,
+			stop_reason: "user_cancelled",
+			session_id: "session-1",
+			iteration: 2,
+		}),
+		"the ralph prompt",
+	);
+	h.pushUser("the ralph prompt");
+	h.pushAssistant("Working on item 2, still mid-flight.");
+
+	await h.commands.get("ralph-resume")?.handler("", h.ctx);
+
+	// No promise yet and the session already has turns: nudge, do not re-seed.
+	assert.deepEqual(h.sentMessages, ["continue"]);
+	assert.equal(h.getNewSessionCount(), 0);
+	const state = readState(h.cwd);
+	assert.equal(state?.running, true);
+	assert.equal(state?.iteration, 2);
+});
+
+test("ralph-resume in same session advances iteration on a re-emitted NEXT", async () => {
+	const h = createCommandsHarness();
+	writeState(
+		h.cwd,
+		makeCommandsState({
+			running: false,
+			stop_reason: "user_cancelled",
+			session_id: "session-1",
+			iteration: 2,
+			max_iterations: 5,
+		}),
+		"the ralph prompt",
+	);
+	h.pushAssistant("Item done.\n<promise>NEXT</promise>");
+
+	await h.commands.get("ralph-resume")?.handler("", h.ctx);
+
+	const state = readState(h.cwd);
+	assert.equal(state?.iteration, 3);
+	assert.equal(state?.transitioning, true);
+	// The re-emitted NEXT must not be answered by re-seeding the prompt.
+	assert.deepEqual(h.sentMessages, []);
+	await new Promise((resolve) => setTimeout(resolve, 600));
+	assert.equal(h.getNewSessionCount(), 1);
+});
+
+test("ralph-resume in same session finalizes on a re-emitted COMPLETE", async () => {
+	const h = createCommandsHarness();
+	writeState(
+		h.cwd,
+		makeCommandsState({
+			running: false,
+			stop_reason: "user_cancelled",
+			session_id: "session-1",
+			iteration: 4,
+		}),
+		"the ralph prompt",
+	);
+	h.pushAssistant("All tasks done.\n<promise>COMPLETE</promise>");
+
+	await h.commands.get("ralph-resume")?.handler("", h.ctx);
+
+	const state = readState(h.cwd);
+	assert.equal(state?.running, false);
+	assert.equal(state?.stop_reason, "complete");
+	assert.deepEqual(h.sentMessages, []);
+	assert.equal(h.getNewSessionCount(), 0);
+});
+
+test("ralph-resume in same session stops on a re-emitted STOP", async () => {
+	const h = createCommandsHarness();
+	writeState(
+		h.cwd,
+		makeCommandsState({
+			running: false,
+			stop_reason: "user_cancelled",
+			session_id: "session-1",
+			iteration: 2,
+		}),
+		"the ralph prompt",
+	);
+	h.pushAssistant("Blocked.\n<promise>STOP</promise>");
+
+	await h.commands.get("ralph-resume")?.handler("", h.ctx);
+
+	const state = readState(h.cwd);
+	assert.equal(state?.running, false);
+	assert.equal(state?.stop_reason, "manual_stop");
+	assert.deepEqual(h.sentMessages, []);
+	assert.equal(h.getNewSessionCount(), 0);
+});
+
+test("ralph-resume in a different session restarts the saved iteration fresh", async () => {
+	const h = createCommandsHarness();
+	writeState(
+		h.cwd,
+		makeCommandsState({
+			running: false,
+			stop_reason: "user_cancelled",
+			session_id: "some-old-session",
+			iteration: 2,
+		}),
+		"the ralph prompt",
+	);
+	// Last assistant message belongs to the OLD session; current session differs,
+	// so resume must open a fresh session rather than route the stale promise.
+	h.pushAssistant("Item done.\n<promise>NEXT</promise>");
+
+	await h.commands.get("ralph-resume")?.handler("", h.ctx);
+
+	const state = readState(h.cwd);
+	assert.equal(state?.iteration, 2);
+	assert.equal(state?.transitioning, true);
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.equal(h.getNewSessionCount(), 1);
+});
+
+function writeMinimalBundle(cwd: string, passes: boolean[]): void {
+	mkdirSync(join(cwd, ".ralph"), { recursive: true });
+	writeFileSync(join(cwd, ".ralph", "plan.md"), "plan\n");
+	writeFileSync(join(cwd, ".ralph", "prompt.md"), "bundle prompt\n");
+	writeFileSync(join(cwd, ".ralph", "progress.md"), "progress\n");
+	writeFileSync(
+		join(cwd, ".ralph", "items.json"),
+		JSON.stringify(
+			{
+				version: 1,
+				runtime_contract: {},
+				items: passes.map((pass, index) => ({
+					category: "test",
+					description: `Item ${index + 1}`,
+					steps: ["Verify it"],
+					passes: pass,
+					regression_notes: "",
+				})),
+			},
+			null,
+			2,
+		),
+	);
+}
+
+test("ralph-resume routes a re-emitted bundle NEXT against the persisted snapshot", async () => {
+	const h = createCommandsHarness();
+	writeMinimalBundle(h.cwd, [false, false]);
+	// Snapshot taken while both items were unfinished is the pre-iteration
+	// baseline persisted in loop.md. A real restart leaves the in-memory store
+	// empty, so validation must fall back to these fields.
+	const snapshot = createBundleSnapshot(loadRalphBundle(h.cwd));
+	writeState(
+		h.cwd,
+		makeCommandsState({
+			running: false,
+			stop_reason: "user_cancelled",
+			session_id: "session-1",
+			iteration: 2,
+			max_iterations: 5,
+			bundle_mode: true,
+			...snapshot,
+		}),
+		"bundle prompt",
+	);
+	// Exactly one item moved false -> true this iteration: a valid NEXT.
+	writeMinimalBundle(h.cwd, [true, false]);
+	h.pushAssistant("Item 1 done.\n<promise>NEXT</promise>");
+
+	await h.commands.get("ralph-resume")?.handler("", h.ctx);
+
+	const state = readState(h.cwd);
+	assert.equal(state?.iteration, 3);
+	assert.equal(state?.transitioning, true);
+	assert.deepEqual(h.sentMessages, []);
+	await new Promise((resolve) => setTimeout(resolve, 600));
+	assert.equal(h.getNewSessionCount(), 1);
+});
+
+test("ralph-resume rejects a re-emitted bundle NEXT that violates the persisted snapshot", async () => {
+	const h = createCommandsHarness();
+	writeMinimalBundle(h.cwd, [false, false]);
+	const snapshot = createBundleSnapshot(loadRalphBundle(h.cwd));
+	writeState(
+		h.cwd,
+		makeCommandsState({
+			running: false,
+			stop_reason: "user_cancelled",
+			session_id: "session-1",
+			iteration: 2,
+			max_iterations: 5,
+			bundle_mode: true,
+			...snapshot,
+		}),
+		"bundle prompt",
+	);
+	// Two items moved vs the persisted baseline: must be rejected, not advanced.
+	writeMinimalBundle(h.cwd, [true, true]);
+	h.pushAssistant("Items done.\n<promise>NEXT</promise>");
+
+	await h.commands.get("ralph-resume")?.handler("", h.ctx);
+
+	const state = readState(h.cwd);
+	assert.equal(state?.iteration, 2);
+	assert.equal(state?.bundle_rejection_count, 1);
+	// A corrective prompt continues the same iteration; the seed prompt is never
+	// re-sent and no fresh session is opened.
+	assert.equal(h.getNewSessionCount(), 0);
+	assert.ok(h.sentMessages.at(-1)?.includes("Ralph rejected <promise>NEXT</promise>"));
 });
 
 test("ralph-restart preserves saved bundle mode", async () => {
