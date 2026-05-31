@@ -42,6 +42,7 @@ function makeEventsState(
 		bundle_items_snapshot: null,
 		git_head: null,
 		bundle_rejection_count: 0,
+		limit_reminders: null,
 	};
 	return { ...baseState, ...overrides };
 }

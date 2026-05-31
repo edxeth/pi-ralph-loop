@@ -29,8 +29,13 @@ const FINAL_PROMISE_WARNING_NUDGE = [
 	"- <promise>COMPLETE</promise> only when ALL tasks are fully done",
 ].join("\n");
 const ITERATION_DELAY_MS = 500;
-const PROVIDER_ERROR_IDLE_CHECK_MS = 1_000;
-const PROVIDER_ERROR_MAX_WAIT_MS = 180_000;
+// How long Ralph waits for Pi's auto-retry after a provider-error turn before
+// declaring the loop dead. Pi retries with exponential backoff and is idle
+// (not streaming) between attempts, so Ralph cannot use idleness as the
+// give-up signal. Instead it waits out this window; any later agent_end (a
+// recovered turn or a fresh failure) supersedes the wait. Kept well above Pi's
+// max per-attempt retry delay so a genuine retry is never cut off.
+export const PROVIDER_ERROR_MAX_WAIT_MS = 180_000;
 const LIMIT_REMINDER_OPT_OUT_ENV = "RALPH_LIMIT_REMINDERS_DISABLED";
 function sendUserMessageWhenIdle(
 	pi: ExtensionAPI,
@@ -74,8 +79,23 @@ const TERMINAL_STOP_REASONS = new Set(["stop", "length", "error", "aborted"]);
 // Per-iteration retry counters (reset on each fresh iteration).
 let _promiseNudges = 0;
 
+// Generation counter for the pending provider-error wait. A provider-error turn
+// arms a wait that captures the current generation; any later agent_end or loop
+// finalization bumps the generation, so a wait armed by an earlier provider
+// error is superseded the moment Pi produces another turn (a recovered turn or
+// a fresh failure). The wait finalizes the loop only when its generation is
+// still current, i.e. Pi stayed silent for the whole window and retries are
+// genuinely exhausted. The timer is unref'd, so a superseded wait costs nothing
+// beyond a no-op fire.
+let _providerErrorWaitGeneration = 0;
+
+function invalidateProviderErrorWait(): void {
+	_providerErrorWaitGeneration++;
+}
+
 function resetIterationCounters(): void {
 	_promiseNudges = 0;
+	invalidateProviderErrorWait();
 }
 
 function shouldStop(cwd: string): boolean {
@@ -83,16 +103,17 @@ function shouldStop(cwd: string): boolean {
 	return state?.cancel_requested === true || state?.stop_requested === true;
 }
 
-function scheduleProviderErrorFinalization(
+function armProviderErrorWait(
 	ctx: ExtensionContext,
 	cwd: string,
 	loopToken: string,
 	iteration: number,
 	errorCount: number,
 	message: string,
-	startedAt = Date.now(),
 ): void {
+	const generation = ++_providerErrorWaitGeneration;
 	const timeout = setTimeout(() => {
+		if (generation !== _providerErrorWaitGeneration) return;
 		const latest = readState(cwd);
 		if (
 			!latest?.running ||
@@ -103,22 +124,9 @@ function scheduleProviderErrorFinalization(
 			return;
 		}
 
-		if (!ctx.isIdle() && Date.now() - startedAt < PROVIDER_ERROR_MAX_WAIT_MS) {
-			scheduleProviderErrorFinalization(
-				ctx,
-				cwd,
-				loopToken,
-				iteration,
-				errorCount,
-				message,
-				startedAt,
-			);
-			return;
-		}
-
 		ctx.ui.notify(message, "error");
 		finalizeLoop(ctx, cwd, "error", errorCount);
-	}, PROVIDER_ERROR_IDLE_CHECK_MS);
+	}, PROVIDER_ERROR_MAX_WAIT_MS);
 	timeout.unref?.();
 }
 
@@ -153,7 +161,7 @@ function handleProviderWait(
 	const errorCount = state.error_count + 1;
 	updateState(ctx.cwd, { error_count: errorCount });
 	ctx.ui.notify(message, "warning");
-	scheduleProviderErrorFinalization(
+	armProviderErrorWait(
 		ctx,
 		ctx.cwd,
 		state.loop_token,
@@ -435,6 +443,11 @@ export function handleLoopAgentEnd(
 ): void {
 	const state = getCurrentState(ctx);
 	if (!state) return;
+
+	// A new agent_end means Pi produced a turn, so any wait left over from a
+	// prior provider-error turn is superseded. Bump the generation before
+	// deciding this turn; a fresh provider error below will arm its own wait.
+	invalidateProviderErrorWait();
 
 	if (shouldStop(ctx.cwd)) {
 		handleRequestedStop(ctx, state);

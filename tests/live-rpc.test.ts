@@ -53,7 +53,7 @@ function createTempAgentConfig(base: string, extensionRoot: string): string {
 	return agentDir;
 }
 
-function createRpcHarness(): RpcHarness {
+function createRpcHarness(options: { extraExtensions?: string[]; model?: string; env?: Record<string, string> } = {}): RpcHarness {
 	const root = process.cwd();
 	const extPath = resolve(root, "src", "index.ts");
 	const base = mkdtempSync(join(tmpdir(), "ralph-live-"));
@@ -64,23 +64,27 @@ function createRpcHarness(): RpcHarness {
 	mkdirSync(workdir, { recursive: true });
 	mkdirSync(sessionDir, { recursive: true });
 
+	const extensionArgs = ["--extension", extPath];
+	for (const extra of options.extraExtensions ?? []) {
+		extensionArgs.push("--extension", extra);
+	}
+
 	const child = spawn(
 		"pi",
 		[
 			"--mode",
 			"rpc",
-			"--extension",
-			extPath,
+			...extensionArgs,
 			"--session-dir",
 			sessionDir,
 			"--model",
-			MODEL,
+			options.model ?? MODEL,
 			"--thinking",
 			THINKING,
 		],
 		{
 			cwd: workdir,
-			env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
+			env: { ...process.env, ...(options.env ?? {}), PI_CODING_AGENT_DIR: agentDir },
 			stdio: ["pipe", "pipe", "pipe"],
 		},
 	);
@@ -240,6 +244,38 @@ test("live pi RPC: rejected bundle NEXT stays in the same session", {
 			1_000,
 		);
 		assert.doesNotMatch(state, /iteration:\s*2/);
+	} finally {
+		await h.stop();
+	}
+});
+
+test("live pi RPC: recovers from a provider error via Pi's auto-retry", {
+	skip: !SHOULD_RUN,
+}, async () => {
+	// Drive Pi's real retry machinery: the fake provider's first stream fails
+	// with a retryable "WebSocket error", then the retry succeeds with COMPLETE.
+	// Pi backs off ~2s between attempts and is idle during that window, which is
+	// exactly when the pre-fix loop wrongly finalized as "error". The loop must
+	// instead wait out the backoff and finalize "complete".
+	const fakeProvider = resolve(
+		process.cwd(),
+		"tests",
+		"fixtures",
+		"fake-provider.ts",
+	);
+	const h = createRpcHarness({
+		extraExtensions: [fakeProvider],
+		model: "ralph-fake/flaky",
+		env: { RALPH_FAKE_API_KEY: "unused-but-present" },
+	});
+	try {
+		h.sendPrompt(
+			'/ralph-loop "Do the work and report the result." --max-iterations=2',
+		);
+		const state = await h.waitForFinalState(/stop_reason:\s*"complete"/, 120_000);
+		// The provider error was seen and counted, but recovery still completed.
+		assert.match(state, /error_count:\s*1/);
+		assert.doesNotMatch(state, /stop_reason:\s*"error"/);
 	} finally {
 		await h.stop();
 	}
