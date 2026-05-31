@@ -2,6 +2,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { finalizeLoop } from "./loop/finalize.js";
 import {
 	handleLoopAgentEnd,
 	handleLoopSessionStart,
@@ -77,15 +78,7 @@ function handleSessionStart(
 	if (!state?.running) return;
 
 	if (event.reason === "startup") {
-		updateState(ctx.cwd, {
-			running: false,
-			completed_at: new Date().toISOString(),
-			stop_reason: "error",
-			transitioning: false,
-			cancel_requested: false,
-			stop_requested: false,
-		});
-		ctx.ui.setStatus("ralph-loop", undefined);
+		finalizeLoop(ctx, ctx.cwd, "error", state.error_count);
 		return;
 	}
 

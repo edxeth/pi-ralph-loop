@@ -10,8 +10,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import {
-	PROVIDER_ERROR_MAX_WAIT_MS,
 	handleLoopAgentEnd,
+	PROVIDER_ERROR_MAX_WAIT_MS,
 } from "../src/loop-engine.ts";
 import { readState, writeState } from "../src/state.ts";
 import type { RalphLoopState } from "../src/types.ts";

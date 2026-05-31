@@ -6,6 +6,7 @@ import type {
 import { updateState } from "../state.js";
 import type { RalphLoopState } from "../types.js";
 import type { ControlPromise } from "./control-promise.js";
+import { sendWhenIdle } from "./idle.js";
 
 const MAX_BUNDLE_REJECTIONS = 5;
 
@@ -25,19 +26,6 @@ function buildBundleRejectionPrompt(
 		`Failed invariant: ${rejection}.`,
 		"Continue this same iteration. Fix the issue, rerun required verification, update only the appropriate bundle state, and end with exactly one valid promise tag on the last non-empty line.",
 	].join("\n");
-}
-
-function sendWhenIdle(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-	message: string,
-): void {
-	if (ctx.isIdle()) {
-		pi.sendUserMessage(message);
-		return;
-	}
-	const timeout = setTimeout(() => sendWhenIdle(pi, ctx, message), 250);
-	timeout.unref?.();
 }
 
 export function rejectBundlePromise(

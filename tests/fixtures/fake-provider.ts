@@ -77,8 +77,18 @@ function streamFakeProvider(
 		const block = output.content[0];
 		if (block.type === "text") {
 			block.text = REPLY;
-			stream.push({ type: "text_delta", contentIndex: 0, delta: REPLY, partial: output });
-			stream.push({ type: "text_end", contentIndex: 0, content: REPLY, partial: output });
+			stream.push({
+				type: "text_delta",
+				contentIndex: 0,
+				delta: REPLY,
+				partial: output,
+			});
+			stream.push({
+				type: "text_end",
+				contentIndex: 0,
+				content: REPLY,
+				partial: output,
+			});
 		}
 
 		if (options?.signal?.aborted) {

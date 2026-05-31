@@ -10,13 +10,22 @@ import {
 } from "./loop/bundle-gates.js";
 import { rejectBundlePromise } from "./loop/bundle-rejections.js";
 import {
-	clearCommandCtx,
 	createFreshSession,
 	getCommandCtx,
 	setCommandCtx,
 } from "./loop/command-context.js";
 import { extractControlPromise } from "./loop/control-promise.js";
 import { finalizeLoop } from "./loop/finalize.js";
+import { sendWhenIdle } from "./loop/idle.js";
+import {
+	areLimitRemindersDisabled,
+	selectLimitReminder,
+} from "./loop/limit-reminders.js";
+import {
+	armProviderWait,
+	isProviderWaitCurrent,
+	supersedeProviderWait,
+} from "./loop/provider-wait.js";
 import { clearLoopStatus, setLoopStatus } from "./loop/status.js";
 import { getTaskBody, readState, updateState, writeState } from "./state.js";
 import type { RalphLoopState, RunLoopOptions } from "./types.js";
@@ -36,66 +45,15 @@ const ITERATION_DELAY_MS = 500;
 // recovered turn or a fresh failure) supersedes the wait. Kept well above Pi's
 // max per-attempt retry delay so a genuine retry is never cut off.
 export const PROVIDER_ERROR_MAX_WAIT_MS = 180_000;
-const LIMIT_REMINDER_OPT_OUT_ENV = "RALPH_LIMIT_REMINDERS_DISABLED";
-function sendUserMessageWhenIdle(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-	message: string,
-): void {
-	if (ctx.isIdle()) {
-		pi.sendUserMessage(message);
-		return;
-	}
-	const timeout = setTimeout(
-		() => sendUserMessageWhenIdle(pi, ctx, message),
-		250,
-	);
-	timeout.unref?.();
-}
-
-const LIMIT_REMINDERS = [
-	{
-		id: "75",
-		percent: 75,
-		message:
-			"This Pi session is getting long and approaching its context limit. Keep following the original instructions. When a valid promise is appropriate, use <promise>NEXT</promise> or <promise>COMPLETE</promise> according to those instructions.",
-	},
-	{
-		id: "80",
-		percent: 80,
-		message:
-			"This Pi session has little context room left. Keep following the original instructions. When a valid promise is appropriate, use <promise>NEXT</promise> or <promise>COMPLETE</promise> according to those instructions.",
-	},
-	{
-		id: "85",
-		percent: 85,
-		message:
-			"This Pi session is almost out of context room. Keep following the original instructions. When a valid promise is appropriate, use <promise>NEXT</promise> or <promise>COMPLETE</promise> according to those instructions.",
-	},
-] as const;
 
 const TERMINAL_STOP_REASONS = new Set(["stop", "length", "error", "aborted"]);
 
-// Per-iteration retry counters (reset on each fresh iteration).
+// Per-iteration promise-nudge counter (reset on each fresh iteration).
 let _promiseNudges = 0;
-
-// Generation counter for the pending provider-error wait. A provider-error turn
-// arms a wait that captures the current generation; any later agent_end or loop
-// finalization bumps the generation, so a wait armed by an earlier provider
-// error is superseded the moment Pi produces another turn (a recovered turn or
-// a fresh failure). The wait finalizes the loop only when its generation is
-// still current, i.e. Pi stayed silent for the whole window and retries are
-// genuinely exhausted. The timer is unref'd, so a superseded wait costs nothing
-// beyond a no-op fire.
-let _providerErrorWaitGeneration = 0;
-
-function invalidateProviderErrorWait(): void {
-	_providerErrorWaitGeneration++;
-}
 
 function resetIterationCounters(): void {
 	_promiseNudges = 0;
-	invalidateProviderErrorWait();
+	supersedeProviderWait();
 }
 
 function shouldStop(cwd: string): boolean {
@@ -111,9 +69,9 @@ function armProviderErrorWait(
 	errorCount: number,
 	message: string,
 ): void {
-	const generation = ++_providerErrorWaitGeneration;
+	const token = armProviderWait();
 	const timeout = setTimeout(() => {
-		if (generation !== _providerErrorWaitGeneration) return;
+		if (!isProviderWaitCurrent(token)) return;
 		const latest = readState(cwd);
 		if (
 			!latest?.running ||
@@ -209,22 +167,6 @@ function handleStopPromise(ctx: ExtensionContext, state: RalphLoopState): void {
 	finalizeLoop(ctx, ctx.cwd, "manual_stop", state.error_count);
 }
 
-function finalizeTransitionError(
-	cwd: string,
-	errorCount: number,
-): void {
-	updateState(cwd, {
-		running: false,
-		completed_at: new Date().toISOString(),
-		stop_reason: "error",
-		error_count: errorCount,
-		transitioning: false,
-		cancel_requested: false,
-		stop_requested: false,
-	});
-	clearCommandCtx();
-}
-
 function scheduleInitialSessionTransition(
 	ctx: ExtensionCommandContext,
 	cwd: string,
@@ -234,10 +176,10 @@ function scheduleInitialSessionTransition(
 		try {
 			const result = await createFreshSession(ctx);
 			if (result.cancelled) {
-				finalizeTransitionError(cwd, errorCount);
+				finalizeLoop(ctx, cwd, "error", errorCount);
 			}
 		} catch {
-			finalizeTransitionError(cwd, errorCount);
+			finalizeLoop(ctx, cwd, "error", errorCount);
 		}
 	}, 0);
 	timeout.unref?.();
@@ -260,10 +202,10 @@ function scheduleNextIteration(
 		try {
 			const result = await createFreshSession(cmdCtx);
 			if (result.cancelled) {
-				finalizeTransitionError(cmdCtx.cwd, state.error_count);
+				finalizeLoop(cmdCtx, cmdCtx.cwd, "error", state.error_count);
 			}
 		} catch {
-			finalizeTransitionError(cmdCtx.cwd, state.error_count);
+			finalizeLoop(cmdCtx, cmdCtx.cwd, "error", state.error_count);
 		}
 	}, ITERATION_DELAY_MS);
 	timeout.unref?.();
@@ -303,11 +245,6 @@ function handleNextPromise(
 	scheduleNextIteration(ctx, state);
 }
 
-function areLimitRemindersDisabled(): boolean {
-	const value = process.env[LIMIT_REMINDER_OPT_OUT_ENV];
-	return value !== undefined && value !== "" && value !== "0";
-}
-
 export function handleLoopTurnEnd(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -326,19 +263,10 @@ export function handleLoopTurnEnd(
 	const usagePercent = usage?.percent;
 	if (usagePercent === undefined || usagePercent === null) return;
 
-	const sent = new Set(
-		(state.limit_reminders ?? "")
-			.split(",")
-			.map((id) => id.trim())
-			.filter(Boolean),
-	);
-	const reminder = LIMIT_REMINDERS.find(
-		(candidate) => usagePercent >= candidate.percent && !sent.has(candidate.id),
-	);
+	const reminder = selectLimitReminder(usagePercent, state.limit_reminders);
 	if (!reminder) return;
 
-	sent.add(reminder.id);
-	updateState(ctx.cwd, { limit_reminders: Array.from(sent).join(",") });
+	updateState(ctx.cwd, { limit_reminders: reminder.sentCsv });
 	pi.sendMessage(
 		{
 			customType: "ralph_limit",
@@ -371,7 +299,7 @@ function handleMissingPromise(
 			: `Iteration ${state.iteration}/${state.max_iterations} missing control promise; nudging continue (${_promiseNudges}/${MAX_PROMISE_NUDGES - 1})`,
 		"warning",
 	);
-	sendUserMessageWhenIdle(
+	sendWhenIdle(
 		pi,
 		ctx,
 		isFinalWarningNudge ? FINAL_PROMISE_WARNING_NUDGE : "continue",
@@ -445,9 +373,9 @@ export function handleLoopAgentEnd(
 	if (!state) return;
 
 	// A new agent_end means Pi produced a turn, so any wait left over from a
-	// prior provider-error turn is superseded. Bump the generation before
-	// deciding this turn; a fresh provider error below will arm its own wait.
-	invalidateProviderErrorWait();
+	// prior provider-error turn is superseded. Supersede before deciding this
+	// turn; a fresh provider error below will arm its own wait.
+	supersedeProviderWait();
 
 	if (shouldStop(ctx.cwd)) {
 		handleRequestedStop(ctx, state);

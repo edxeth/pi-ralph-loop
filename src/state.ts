@@ -7,6 +7,68 @@ import type { RalphLoopState } from "./types.js";
 const STATE_FILE = join(".ralph", "loop.md");
 
 /**
+ * Coercion kinds for persisted state fields. Each kind defines how a parsed
+ * frontmatter value is normalized back into a typed field (and its default
+ * when the value is missing or the wrong type).
+ */
+type FieldKind = "bool" | "int" | "intNull" | "string" | "stringNull" | "token";
+
+const COERCE: Record<FieldKind, (value: unknown) => unknown> = {
+	bool: (value) => value === true,
+	int: (value) => (typeof value === "number" ? value : 0),
+	intNull: (value) => (typeof value === "number" ? value : null),
+	string: (value) => (typeof value === "string" ? value : ""),
+	stringNull: (value) => (typeof value === "string" ? value : null),
+	token: (value) =>
+		typeof value === "string" && value.length > 0 ? value : randomUUID(),
+};
+
+/**
+ * Ordered descriptor for every persisted field. This single list drives both
+ * serialization (writeState) and parsing (readState), so a new field is one
+ * entry here rather than three parallel edits. `satisfies` constrains keys to
+ * the RalphLoopState interface; the assertion below proves the descriptor
+ * covers every field.
+ */
+const STATE_SCHEMA = [
+	["running", "bool"],
+	["iteration", "int"],
+	["max_iterations", "int"],
+	["started_at", "string"],
+	["completed_at", "stringNull"],
+	["stop_reason", "stringNull"],
+	["session_id", "string"],
+	["last_session_file", "stringNull"],
+	["error_count", "int"],
+	["transitioning", "bool"],
+	["cancel_requested", "bool"],
+	["stop_requested", "bool"],
+	["bundle_mode", "bool"],
+	["loop_token", "token"],
+	["bundle_snapshot_hash", "stringNull"],
+	["items_snapshot_hash", "stringNull"],
+	["progress_size", "intNull"],
+	["progress_hash", "stringNull"],
+	["progress_snapshot", "stringNull"],
+	["source_doc_hashes", "stringNull"],
+	["bundle_items_snapshot", "stringNull"],
+	["git_head", "stringNull"],
+	["bundle_rejection_count", "int"],
+	["limit_reminders", "stringNull"],
+] as const satisfies ReadonlyArray<readonly [keyof RalphLoopState, FieldKind]>;
+
+// Compile-time proof that the descriptor names every RalphLoopState field.
+// If a field is added to the interface but not to STATE_SCHEMA, _MissingFields
+// becomes that key and this assignment fails to compile.
+type _MissingFields = Exclude<
+	keyof RalphLoopState,
+	(typeof STATE_SCHEMA)[number][0]
+>;
+const _stateSchemaIsComplete: _MissingFields extends never ? true : false =
+	true;
+void _stateSchemaIsComplete;
+
+/**
  * Serialize a frontmatter value to its YAML representation.
  */
 function serializeValue(value: unknown): string {
@@ -62,64 +124,11 @@ export function readState(cwd: string): RalphLoopState | null {
 			data[key] = parseValue(value);
 		}
 
-		return {
-			running: data.running === true,
-			iteration: typeof data.iteration === "number" ? data.iteration : 0,
-			max_iterations:
-				typeof data.max_iterations === "number" ? data.max_iterations : 0,
-			started_at: typeof data.started_at === "string" ? data.started_at : "",
-			completed_at:
-				typeof data.completed_at === "string" ? data.completed_at : null,
-			stop_reason:
-				typeof data.stop_reason === "string"
-					? (data.stop_reason as RalphLoopState["stop_reason"])
-					: null,
-			session_id: typeof data.session_id === "string" ? data.session_id : "",
-			last_session_file:
-				typeof data.last_session_file === "string"
-					? data.last_session_file
-					: null,
-			error_count: typeof data.error_count === "number" ? data.error_count : 0,
-			transitioning: data.transitioning === true,
-			cancel_requested: data.cancel_requested === true,
-			stop_requested: data.stop_requested === true,
-			bundle_mode: data.bundle_mode === true,
-			loop_token:
-				typeof data.loop_token === "string" && data.loop_token.length > 0
-					? data.loop_token
-					: randomUUID(),
-			bundle_snapshot_hash:
-				typeof data.bundle_snapshot_hash === "string"
-					? data.bundle_snapshot_hash
-					: null,
-			items_snapshot_hash:
-				typeof data.items_snapshot_hash === "string"
-					? data.items_snapshot_hash
-					: null,
-			progress_size:
-				typeof data.progress_size === "number" ? data.progress_size : null,
-			progress_hash:
-				typeof data.progress_hash === "string" ? data.progress_hash : null,
-			progress_snapshot:
-				typeof data.progress_snapshot === "string"
-					? data.progress_snapshot
-					: null,
-			source_doc_hashes:
-				typeof data.source_doc_hashes === "string"
-					? data.source_doc_hashes
-					: null,
-			bundle_items_snapshot:
-				typeof data.bundle_items_snapshot === "string"
-					? data.bundle_items_snapshot
-					: null,
-			git_head: typeof data.git_head === "string" ? data.git_head : null,
-			bundle_rejection_count:
-				typeof data.bundle_rejection_count === "number"
-					? data.bundle_rejection_count
-					: 0,
-			limit_reminders:
-				typeof data.limit_reminders === "string" ? data.limit_reminders : null,
-		};
+		const state: Record<string, unknown> = {};
+		for (const [key, kind] of STATE_SCHEMA) {
+			state[key] = COERCE[kind](data[key]);
+		}
+		return state as unknown as RalphLoopState;
 	} catch {
 		return null;
 	}
@@ -144,30 +153,7 @@ export function writeState(
 
 	const frontmatter = [
 		"---",
-		`running: ${serializeValue(state.running)}`,
-		`iteration: ${serializeValue(state.iteration)}`,
-		`max_iterations: ${serializeValue(state.max_iterations)}`,
-		`started_at: ${serializeValue(state.started_at)}`,
-		`completed_at: ${serializeValue(state.completed_at)}`,
-		`stop_reason: ${serializeValue(state.stop_reason)}`,
-		`session_id: ${serializeValue(state.session_id)}`,
-		`last_session_file: ${serializeValue(state.last_session_file)}`,
-		`error_count: ${serializeValue(state.error_count)}`,
-		`transitioning: ${serializeValue(state.transitioning)}`,
-		`cancel_requested: ${serializeValue(state.cancel_requested)}`,
-		`stop_requested: ${serializeValue(state.stop_requested)}`,
-		`bundle_mode: ${serializeValue(state.bundle_mode)}`,
-		`loop_token: ${serializeValue(state.loop_token)}`,
-		`bundle_snapshot_hash: ${serializeValue(state.bundle_snapshot_hash)}`,
-		`items_snapshot_hash: ${serializeValue(state.items_snapshot_hash)}`,
-		`progress_size: ${serializeValue(state.progress_size)}`,
-		`progress_hash: ${serializeValue(state.progress_hash)}`,
-		`progress_snapshot: ${serializeValue(state.progress_snapshot)}`,
-		`source_doc_hashes: ${serializeValue(state.source_doc_hashes)}`,
-		`bundle_items_snapshot: ${serializeValue(state.bundle_items_snapshot)}`,
-		`git_head: ${serializeValue(state.git_head)}`,
-		`bundle_rejection_count: ${serializeValue(state.bundle_rejection_count)}`,
-		`limit_reminders: ${serializeValue(state.limit_reminders)}`,
+		...STATE_SCHEMA.map(([key]) => `${key}: ${serializeValue(state[key])}`),
 		"---",
 	].join("\n");
 

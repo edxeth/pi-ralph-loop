@@ -9,17 +9,7 @@ import {
 } from "../bundle/index.js";
 import { updateState } from "../state.js";
 import type { RalphLoopState } from "../types.js";
-
-const liveSnapshots = new Map<string, Partial<RalphLoopState>>();
-const latestSnapshots = new Map<string, Partial<RalphLoopState>>();
-
-function snapshotKey(cwd: string, state: RalphLoopState): string {
-	return `${state.loop_token}:${state.iteration}:${cwd}`;
-}
-
-function latestSnapshotKey(cwd: string, state: RalphLoopState): string {
-	return `${state.loop_token}:${cwd}`;
-}
+import { getSnapshot, recordSnapshot } from "./snapshot-store.js";
 
 export function snapshotBundleIteration(
 	cwd: string,
@@ -27,11 +17,7 @@ export function snapshotBundleIteration(
 ): void {
 	const bundle = loadRalphBundle(cwd);
 	const snapshot = createBundleSnapshot(bundle);
-	liveSnapshots.set(snapshotKey(cwd, state), snapshot);
-	latestSnapshots.set(latestSnapshotKey(cwd, state), {
-		...snapshot,
-		iteration: state.iteration,
-	});
+	recordSnapshot(cwd, state, snapshot);
 	updateState(cwd, snapshot);
 }
 
@@ -39,9 +25,7 @@ function getValidationSnapshot(
 	cwd: string,
 	state: RalphLoopState,
 ): RalphLoopState {
-	const snapshot =
-		liveSnapshots.get(snapshotKey(cwd, state)) ??
-		latestSnapshots.get(latestSnapshotKey(cwd, state));
+	const snapshot = getSnapshot(cwd, state);
 	return snapshot ? { ...state, ...snapshot } : state;
 }
 
@@ -63,7 +47,10 @@ export function validateBundlePromise(
 		}
 
 		return (
-			evaluateCompleteGate(snapshot.bundle_items_snapshot, bundle.items.items) ??
+			evaluateCompleteGate(
+				snapshot.bundle_items_snapshot,
+				bundle.items.items,
+			) ??
 			evaluateBundleCompleteFileGate(bundle, snapshot) ??
 			evaluateVerificationGates(bundle)
 		);

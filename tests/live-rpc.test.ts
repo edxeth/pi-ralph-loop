@@ -53,7 +53,13 @@ function createTempAgentConfig(base: string, extensionRoot: string): string {
 	return agentDir;
 }
 
-function createRpcHarness(options: { extraExtensions?: string[]; model?: string; env?: Record<string, string> } = {}): RpcHarness {
+function createRpcHarness(
+	options: {
+		extraExtensions?: string[];
+		model?: string;
+		env?: Record<string, string>;
+	} = {},
+): RpcHarness {
 	const root = process.cwd();
 	const extPath = resolve(root, "src", "index.ts");
 	const base = mkdtempSync(join(tmpdir(), "ralph-live-"));
@@ -84,7 +90,11 @@ function createRpcHarness(options: { extraExtensions?: string[]; model?: string;
 		],
 		{
 			cwd: workdir,
-			env: { ...process.env, ...(options.env ?? {}), PI_CODING_AGENT_DIR: agentDir },
+			env: {
+				...process.env,
+				...(options.env ?? {}),
+				PI_CODING_AGENT_DIR: agentDir,
+			},
 			stdio: ["pipe", "pipe", "pipe"],
 		},
 	);
@@ -272,7 +282,10 @@ test("live pi RPC: recovers from a provider error via Pi's auto-retry", {
 		h.sendPrompt(
 			'/ralph-loop "Do the work and report the result." --max-iterations=2',
 		);
-		const state = await h.waitForFinalState(/stop_reason:\s*"complete"/, 120_000);
+		const state = await h.waitForFinalState(
+			/stop_reason:\s*"complete"/,
+			120_000,
+		);
 		// The provider error was seen and counted, but recovery still completed.
 		assert.match(state, /error_count:\s*1/);
 		assert.doesNotMatch(state, /stop_reason:\s*"error"/);

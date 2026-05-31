@@ -39,7 +39,9 @@ type Harness = {
 	pi: ExtensionAPI;
 	ctx: ExtensionCommandContext;
 	sentMessages: string[];
-	sentMessageOptions: Array<{ deliverAs?: string; triggerTurn?: boolean } | undefined>;
+	sentMessageOptions: Array<
+		{ deliverAs?: string; triggerTurn?: boolean } | undefined
+	>;
 	idleWaits: number;
 	customMessages: Array<{
 		customType: string;
