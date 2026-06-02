@@ -19,6 +19,10 @@ type CommandDef = {
 	handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> | void;
 };
 
+async function waitForScheduledWork(): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 10));
+}
+
 function makeCommandsState(
 	overrides: Partial<RalphLoopState> = {},
 ): RalphLoopState {
@@ -198,7 +202,9 @@ test("ralph-loop starts bundle mode for @.ralph/prompt.md", async () => {
 		.get("ralph-loop")
 		?.handler("@.ralph/prompt.md --max-iterations=3", h.ctx);
 
-	assert.equal(h.getNewSessionCount(), 1);
+	await waitForScheduledWork();
+	assert.equal(h.getNewSessionCount(), 0);
+	assert.equal(h.sentMessages.at(-1), "bundle prompt\n");
 	assert.ok(
 		h.notifications.some(
 			(notification) =>
@@ -222,7 +228,9 @@ test("ralph-loop starts bundle mode for @./.ralph/prompt.md", async () => {
 
 	await h.commands.get("ralph-loop")?.handler('"@./.ralph/prompt.md"', h.ctx);
 
-	assert.equal(h.getNewSessionCount(), 1);
+	await waitForScheduledWork();
+	assert.equal(h.getNewSessionCount(), 0);
+	assert.equal(h.sentMessages.at(-1), "bundle prompt\n");
 	assert.ok(
 		h.notifications.some(
 			(notification) =>
@@ -248,13 +256,27 @@ test("ralph-loop preserves non-bundle prompt references", async () => {
 
 	await h.commands.get("ralph-loop")?.handler("@notes.md", h.ctx);
 
-	assert.equal(h.getNewSessionCount(), 1);
+	await waitForScheduledWork();
+	assert.equal(h.getNewSessionCount(), 0);
+	assert.equal(h.sentMessages.at(-1), "@notes.md");
 	assert.ok(
 		h.notifications.some(
 			(notification) =>
 				notification.message === "Ralph loop started (max 100 iterations)",
 		),
 	);
+});
+
+test("ralph-loop starts in a fresh session when current session has history", async () => {
+	const h = createCommandsHarness();
+	h.pushUser("prior chat");
+
+	await h.commands.get("ralph-loop")?.handler("new task", h.ctx);
+
+	assert.equal(h.getNewSessionCount(), 0);
+	await waitForScheduledWork();
+	assert.equal(h.getNewSessionCount(), 1);
+	assert.equal(h.sentMessages.at(-1), "new task");
 });
 
 test("ralph-loop rejects start when active loop state exists", async () => {
@@ -405,6 +427,8 @@ test("ralph-resume in a different session restarts the saved iteration fresh", a
 
 	await h.commands.get("ralph-resume")?.handler("", h.ctx);
 
+	assert.equal(h.getNewSessionCount(), 0);
+	await waitForScheduledWork();
 	const state = readState(h.cwd);
 	assert.equal(state?.iteration, 2);
 	assert.equal(state?.transitioning, false);
@@ -519,6 +543,8 @@ test("ralph-restart preserves saved bundle mode", async () => {
 	await h.commands.get("ralph-restart")?.handler("", h.ctx);
 
 	assert.equal(readState(h.cwd)?.bundle_mode, true);
+	assert.equal(h.getNewSessionCount(), 0);
+	await waitForScheduledWork();
 	assert.equal(h.getNewSessionCount(), 1);
 });
 

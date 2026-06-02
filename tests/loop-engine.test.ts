@@ -50,6 +50,11 @@ type Harness = {
 		options?: { deliverAs?: string; triggerTurn?: boolean };
 	}>;
 	notifications: Array<{ message: string; type: string }>;
+	widgets: Array<{
+		key: string;
+		content: unknown;
+		placement?: string;
+	}>;
 	newSessionCalls: number;
 	setSession: (id: string, file: string) => void;
 	setIdle: (value: boolean) => void;
@@ -151,6 +156,11 @@ function createHarness(): Harness {
 	const customMessages: Harness["customMessages"] = [];
 	const notifications: Array<{ message: string; type: string }> = [];
 	const statusUpdates: Array<{ key: string; value: string | undefined }> = [];
+	const widgets: Array<{
+		key: string;
+		content: unknown;
+		placement?: string;
+	}> = [];
 	const sessionNames: string[] = [];
 	let sessionId = "session-1";
 	let sessionFile = "/sessions/session-1.jsonl";
@@ -166,6 +176,13 @@ function createHarness(): Harness {
 		},
 		setStatus(key: string, value: string | undefined) {
 			statusUpdates.push({ key, value });
+		},
+		setWidget(
+			key: string,
+			content: unknown,
+			options?: { placement?: string },
+		) {
+			widgets.push({ key, content, placement: options?.placement });
 		},
 		setWorkingVisible(_visible: boolean) {},
 	};
@@ -267,6 +284,7 @@ function createHarness(): Harness {
 		},
 		customMessages,
 		notifications,
+		widgets,
 		get newSessionCalls() {
 			return newSessionCalls;
 		},
@@ -287,18 +305,22 @@ function createHarness(): Harness {
 	};
 }
 
-test("runLoop starts the first iteration in a fresh session", async () => {
+test("runLoop uses the current session when it has no turns", async () => {
 	const h = createHarness();
 
-	await runLoop(h.ctx, "task", 3);
+	await runLoop(h.pi, h.ctx, "task", 3);
 
 	const state = h.readState();
-	assert.equal(h.newSessionCalls, 1);
+	assert.equal(h.newSessionCalls, 0);
 	assert.equal(state?.running, true);
 	assert.equal(state?.iteration, 1);
 	assert.equal(state?.max_iterations, 3);
 	assert.equal(state?.transitioning, false);
 	assert.equal(h.sentMessages.at(-1), "task");
+	assert.equal(h.widgets.length, 1);
+	assert.equal(h.widgets.at(-1)?.key, "ralph-loop-notice");
+	assert.equal(h.widgets.at(-1)?.placement, "aboveEditor");
+	assert.equal(typeof h.widgets.at(-1)?.content, "function");
 });
 
 test("bundle NEXT accepts exactly one completed item", async () => {
@@ -784,13 +806,12 @@ test("agent_end missing control promise queues continue nudge", async () => {
 	await new Promise((resolve) => setTimeout(resolve, 50));
 	assert.equal(h.sentMessages.at(-1), "continue");
 	assert.equal(h.sentMessageOptions.at(-1), undefined);
-	assert.match(
-		h.notifications.at(-1)?.message ?? "",
-		/missing control promise; nudging continue/,
-	);
+	assert.equal(h.widgets.at(-1)?.key, "ralph-loop-notice");
+	assert.equal(h.widgets.at(-1)?.placement, "aboveEditor");
+	assert.equal(typeof h.widgets.at(-1)?.content, "function");
 });
 
-test("agent_end with NEXT notifies, advances iteration, and requests new session", async () => {
+test("agent_end with NEXT shows notice, advances iteration, and requests new session", async () => {
 	const h = createHarness();
 	h.writeState(
 		makeBaseState({ iteration: 1, max_iterations: 3, transitioning: false }),
@@ -806,10 +827,9 @@ test("agent_end with NEXT notifies, advances iteration, and requests new session
 	const state = h.readState();
 	assert.equal(state?.iteration, 2);
 	assert.equal(state?.transitioning, true);
-	assert.deepEqual(h.notifications.at(-1), {
-		message: "Starting iteration 2/3 in a fresh session...",
-		type: "info",
-	});
+	assert.equal(h.widgets.at(-1)?.key, "ralph-loop-notice");
+	assert.equal(h.widgets.at(-1)?.placement, "aboveEditor");
+	assert.equal(typeof h.widgets.at(-1)?.content, "function");
 
 	// newSession is called via setTimeout, so wait a tick.
 	await new Promise((r) => setTimeout(r, 600));

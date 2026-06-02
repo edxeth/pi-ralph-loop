@@ -22,7 +22,11 @@ import {
 	isProviderWaitCurrent,
 	supersedeProviderWait,
 } from "./loop/provider-wait.js";
-import { clearLoopStatus, setLoopStatus } from "./loop/status.js";
+import {
+	clearLoopStatus,
+	setLoopStatus,
+	showLoopNotice,
+} from "./loop/status.js";
 import { getTaskBody, readState, updateState, writeState } from "./state.js";
 import type { RalphLoopState, RunLoopOptions } from "./types.js";
 
@@ -42,6 +46,13 @@ const FINAL_PROMISE_WARNING_NUDGE = [
 export const PROVIDER_ERROR_MAX_WAIT_MS = 180_000;
 
 const TERMINAL_STOP_REASONS = new Set(["stop", "length", "error", "aborted"]);
+
+type NewSessionOptions = NonNullable<
+	Parameters<ExtensionCommandContext["newSession"]>[0]
+>;
+type ReplacementSessionContext = Parameters<
+	NonNullable<NewSessionOptions["withSession"]>
+>[0];
 
 // Per-iteration promise-nudge counter (reset on each fresh iteration).
 let _promiseNudges = 0;
@@ -77,7 +88,7 @@ function armProviderErrorWait(
 			return;
 		}
 
-		ctx.ui.notify(message, "error");
+		showLoopNotice(ctx, message, "error");
 		finalizeLoop(ctx, cwd, "error", errorCount);
 	}, PROVIDER_ERROR_MAX_WAIT_MS);
 	timeout.unref?.();
@@ -132,7 +143,7 @@ function handleRequestedStop(
 ): void {
 	const stopReason = state.cancel_requested ? "user_cancelled" : "manual_stop";
 	if (stopReason === "manual_stop") {
-		ctx.ui.notify("Ralph loop stopped manually", "info");
+		showLoopNotice(ctx, "Ralph loop stopped manually", "info");
 	}
 	finalizeLoop(ctx, ctx.cwd, stopReason, state.error_count);
 }
@@ -145,7 +156,7 @@ function handleProviderWait(
 ): void {
 	const errorCount = state.error_count + 1;
 	updateState(ctx.cwd, { error_count: errorCount });
-	ctx.ui.notify(message, "warning");
+	showLoopNotice(ctx, message, "warning");
 	armProviderErrorWait(
 		ctx,
 		ctx.cwd,
@@ -179,7 +190,8 @@ function handleCompletePromise(
 		return;
 	}
 
-	ctx.ui.notify(
+	showLoopNotice(
+		ctx,
 		`Ralph loop complete after ${state.iteration} iterations!`,
 		"info",
 	);
@@ -187,7 +199,8 @@ function handleCompletePromise(
 }
 
 function handleStopPromise(ctx: ExtensionContext, state: RalphLoopState): void {
-	ctx.ui.notify(
+	showLoopNotice(
+		ctx,
 		`Ralph loop stopped by assistant at iteration ${state.iteration} via <promise>STOP</promise>`,
 		"warning",
 	);
@@ -204,10 +217,6 @@ function markIterationStarted(
 ): void {
 	resetIterationCounters();
 	setLoopStatus(ctx, state.iteration, state.max_iterations);
-	ctx.ui.notify(
-		`Ralph iteration ${state.iteration}/${state.max_iterations}`,
-		"info",
-	);
 	updateState(ctx.cwd, {
 		transitioning: false,
 		session_id: ctx.sessionManager.getSessionId(),
@@ -227,6 +236,24 @@ function startCurrentIteration(
 	markIterationStarted(ctx, state);
 	pi.setSessionName(formatIterationSessionName(state));
 	pi.sendUserMessage(task);
+}
+
+function scheduleReplacementPrompt(
+	ctx: ReplacementSessionContext,
+	task: string,
+	errorCount: number,
+): void {
+	setTimeout(() => {
+		void (async () => {
+			const state = readState(ctx.cwd);
+			if (!state?.running) return;
+			try {
+				await ctx.sendUserMessage(task);
+			} catch {
+				finalizeLoop(ctx, ctx.cwd, "error", state.error_count || errorCount);
+			}
+		})();
+	}, 0);
 }
 
 async function openFreshIterationSession(
@@ -250,12 +277,8 @@ async function openFreshIterationSession(
 				setCommandCtx(nextCtx);
 				const latest = readState(nextCtx.cwd);
 				if (!latest?.running) return;
-				try {
-					markIterationStarted(nextCtx, latest);
-					await nextCtx.sendUserMessage(task);
-				} catch {
-					finalizeLoop(nextCtx, nextCtx.cwd, "error", latest.error_count);
-				}
+				markIterationStarted(nextCtx, latest);
+				scheduleReplacementPrompt(nextCtx, task, latest.error_count);
 			},
 		});
 		if (result.cancelled) {
@@ -266,6 +289,15 @@ async function openFreshIterationSession(
 	}
 }
 
+function scheduleFreshIterationSession(
+	ctx: ExtensionCommandContext,
+	errorCount: number,
+): void {
+	setTimeout(() => {
+		void openFreshIterationSession(ctx, errorCount);
+	}, 0);
+}
+
 function scheduleNextIteration(
 	ctx: ExtensionContext,
 	state: RalphLoopState,
@@ -273,7 +305,8 @@ function scheduleNextIteration(
 	setTimeout(() => {
 		const cmdCtx = getCommandCtx();
 		if (!cmdCtx || cmdCtx.cwd !== ctx.cwd) {
-			ctx.ui.notify(
+			showLoopNotice(
+				ctx,
 				"Ralph loop error: lost command context for session transition",
 				"error",
 			);
@@ -296,7 +329,8 @@ function handleNextPromise(
 	}
 
 	if (state.iteration >= state.max_iterations) {
-		ctx.ui.notify(
+		showLoopNotice(
+			ctx,
 			`Ralph loop reached max iterations (${state.max_iterations})`,
 			"warning",
 		);
@@ -305,9 +339,11 @@ function handleNextPromise(
 	}
 
 	const nextIteration = state.iteration + 1;
-	ctx.ui.notify(
+	showLoopNotice(
+		ctx,
 		`Starting iteration ${nextIteration}/${state.max_iterations} in a fresh session...`,
 		"info",
+		{ autoClear: true },
 	);
 	updateState(ctx.cwd, {
 		iteration: nextIteration,
@@ -357,7 +393,8 @@ function handleMissingPromise(
 ): void {
 	_promiseNudges++;
 	if (_promiseNudges >= MAX_PROMISE_NUDGES) {
-		ctx.ui.notify(
+		showLoopNotice(
+			ctx,
 			`Ralph loop failed at iteration ${state.iteration}: assistant did not emit <promise>NEXT</promise>, <promise>COMPLETE</promise>, or <promise>STOP</promise> within ${MAX_PROMISE_NUDGES - 1} nudges`,
 			"error",
 		);
@@ -366,7 +403,8 @@ function handleMissingPromise(
 	}
 
 	const isFinalWarningNudge = _promiseNudges === MAX_PROMISE_NUDGES - 1;
-	ctx.ui.notify(
+	showLoopNotice(
+		ctx,
 		isFinalWarningNudge
 			? `Iteration ${state.iteration}/${state.max_iterations} still missing control promise; sending final warning nudge (${_promiseNudges}/${MAX_PROMISE_NUDGES - 1})`
 			: `Iteration ${state.iteration}/${state.max_iterations} missing control promise; nudging continue (${_promiseNudges}/${MAX_PROMISE_NUDGES - 1})`,
@@ -413,7 +451,8 @@ export function handleLoopAgentEnd(
 
 	const stopReason = assistant.stopReason;
 	if (stopReason === "aborted") {
-		ctx.ui.notify(
+		showLoopNotice(
+			ctx,
 			`Ralph loop cancelled by user at iteration ${state.iteration}`,
 			"info",
 		);
@@ -461,6 +500,7 @@ export function handleLoopAgentEnd(
 // ── Command-level entry points ──────────────────────────────────────────
 
 export async function runLoop(
+	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
 	task: string,
 	maxIterations: number,
@@ -471,6 +511,8 @@ export async function runLoop(
 	const startedAt = options.startedAt ?? new Date().toISOString();
 	const initialErrorCount = options.initialErrorCount ?? 0;
 	const bundleMode = options.bundleMode === true;
+	const useCurrentSession =
+		options.forceFreshSession !== true && !readSessionTurns(ctx).hasTurns;
 
 	const initialState: RalphLoopState = {
 		running: true,
@@ -507,9 +549,16 @@ export async function runLoop(
 	setCommandCtx(ctx);
 	resetIterationCounters();
 
-	ctx.ui.notify(`Ralph loop started (max ${maxIterations} iterations)`, "info");
+	showLoopNotice(ctx, `Ralph loop started (max ${maxIterations} iterations)`, "info", {
+		autoClear: true,
+	});
 
-	await openFreshIterationSession(ctx, initialErrorCount);
+	if (useCurrentSession) {
+		startCurrentIteration(pi, ctx, initialState, task);
+		return;
+	}
+
+	scheduleFreshIterationSession(ctx, initialErrorCount);
 }
 
 /**
@@ -538,7 +587,11 @@ export async function resumeCurrentSession(
 	const saved = readState(ctx.cwd);
 	const task = getTaskBody(ctx.cwd);
 	if (!saved || !task) {
-		ctx.ui.notify("No resumable Ralph loop state found in .ralph/loop.md", "error");
+		showLoopNotice(
+			ctx,
+			"No resumable Ralph loop state found in .ralph/loop.md",
+			"error",
+		);
 		return;
 	}
 
@@ -595,7 +648,7 @@ export async function continueLoop(
 	const state = readState(ctx.cwd);
 	const task = getTaskBody(ctx.cwd);
 	if (!state || !task || !state.running) {
-		ctx.ui.notify("No Ralph loop is running", "info");
+		showLoopNotice(ctx, "No Ralph loop is running", "info");
 		clearLoopStatus(ctx);
 		return;
 	}

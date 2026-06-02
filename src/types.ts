@@ -46,4 +46,5 @@ export interface RunLoopOptions {
 	startedAt?: string;
 	initialErrorCount?: number;
 	bundleMode?: boolean;
+	forceFreshSession?: boolean;
 }
