@@ -95,9 +95,17 @@ function createCommandsHarness() {
 			getSessionFile: () => "/sessions/session-1.jsonl",
 			getBranch: () => branch,
 		},
-		newSession() {
+		async newSession(options?: {
+			withSession?: (ctx: ExtensionCommandContext) => Promise<void>;
+		}) {
 			newSessionCount++;
-			return Promise.resolve({ cancelled: false });
+			await options?.withSession?.({
+				...ctx,
+				sendUserMessage(message: string) {
+					sentMessages.push(message);
+				},
+			} as unknown as ExtensionCommandContext);
+			return { cancelled: false };
 		},
 	} as unknown as ExtensionCommandContext;
 
@@ -190,13 +198,13 @@ test("ralph-loop starts bundle mode for @.ralph/prompt.md", async () => {
 		.get("ralph-loop")
 		?.handler("@.ralph/prompt.md --max-iterations=3", h.ctx);
 
-	assert.equal(h.getNewSessionCount(), 0);
-	assert.equal(
-		h.notifications.at(-1)?.message,
-		"Ralph loop started (max 3 iterations)",
-	);
-	await new Promise((resolve) => setTimeout(resolve, 10));
 	assert.equal(h.getNewSessionCount(), 1);
+	assert.ok(
+		h.notifications.some(
+			(notification) =>
+				notification.message === "Ralph loop started (max 3 iterations)",
+		),
+	);
 	const state = readState(h.cwd);
 	assert.equal(state?.bundle_mode, true);
 	assert.ok(state?.loop_token);
@@ -214,13 +222,13 @@ test("ralph-loop starts bundle mode for @./.ralph/prompt.md", async () => {
 
 	await h.commands.get("ralph-loop")?.handler('"@./.ralph/prompt.md"', h.ctx);
 
-	assert.equal(h.getNewSessionCount(), 0);
-	assert.equal(
-		h.notifications.at(-1)?.message,
-		"Ralph loop started (max 100 iterations)",
-	);
-	await new Promise((resolve) => setTimeout(resolve, 10));
 	assert.equal(h.getNewSessionCount(), 1);
+	assert.ok(
+		h.notifications.some(
+			(notification) =>
+				notification.message === "Ralph loop started (max 100 iterations)",
+		),
+	);
 });
 
 test("ralph-loop rejects bundle mode when bundle validation fails", async () => {
@@ -240,13 +248,13 @@ test("ralph-loop preserves non-bundle prompt references", async () => {
 
 	await h.commands.get("ralph-loop")?.handler("@notes.md", h.ctx);
 
-	assert.equal(h.getNewSessionCount(), 0);
-	assert.equal(
-		h.notifications.at(-1)?.message,
-		"Ralph loop started (max 100 iterations)",
-	);
-	await new Promise((resolve) => setTimeout(resolve, 10));
 	assert.equal(h.getNewSessionCount(), 1);
+	assert.ok(
+		h.notifications.some(
+			(notification) =>
+				notification.message === "Ralph loop started (max 100 iterations)",
+		),
+	);
 });
 
 test("ralph-loop rejects start when active loop state exists", async () => {
@@ -399,9 +407,9 @@ test("ralph-resume in a different session restarts the saved iteration fresh", a
 
 	const state = readState(h.cwd);
 	assert.equal(state?.iteration, 2);
-	assert.equal(state?.transitioning, true);
-	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.equal(state?.transitioning, false);
 	assert.equal(h.getNewSessionCount(), 1);
+	assert.deepEqual(h.sentMessages, ["the ralph prompt"]);
 });
 
 function writeMinimalBundle(cwd: string, passes: boolean[]): void {
@@ -511,8 +519,6 @@ test("ralph-restart preserves saved bundle mode", async () => {
 	await h.commands.get("ralph-restart")?.handler("", h.ctx);
 
 	assert.equal(readState(h.cwd)?.bundle_mode, true);
-	assert.equal(h.getNewSessionCount(), 0);
-	await new Promise((resolve) => setTimeout(resolve, 10));
 	assert.equal(h.getNewSessionCount(), 1);
 });
 

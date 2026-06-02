@@ -192,12 +192,12 @@ test("ralph-stop marks persisted state for stopping", async () => {
 	});
 });
 
-test("session_start sends task text for Ralph-created new sessions", async () => {
+test("session_start does not start Ralph iterations", async () => {
 	const h = createHarness();
 	writeState(h.cwd, makeState({ transitioning: true }), "task");
 
 	await h.sessionStart({ reason: "new" }, h.eventCtx);
 
-	// Event-driven architecture: session_start sends the task text directly.
-	assert.deepEqual(h.sentMessages, ["task"]);
+	// Iteration startup happens in ctx.newSession({ withSession }), not here.
+	assert.deepEqual(h.sentMessages, []);
 });

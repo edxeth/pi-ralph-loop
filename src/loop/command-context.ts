@@ -1,12 +1,10 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 // Stored command context ──────────────────────────────────────────────
-// The command handler (/ralph-loop, /ralph-resume, /ralph-restart) stores
-// the current command-capable context here so that event handlers
-// (session_start, agent_end) can trigger the next session transition.
-//
-// In pi >=0.69.0, command contexts become stale after session replacement, so
-// every newSession() must refresh this stored context via withSession().
+// Agent event handlers receive ExtensionContext, which cannot open a new
+// session. Ralph stores the latest command-capable context so an accepted NEXT
+// promise can call ctx.newSession(). Every replacement must refresh this value
+// from newSession({ withSession }) because the previous command context is stale.
 //
 // Stored on globalThis because pi reloads extension modules on newSession(),
 // which would reset a module-level variable to null.
@@ -26,14 +24,4 @@ export function setCommandCtx(ctx: ExtensionCommandContext | null): void {
 
 export function clearCommandCtx(): void {
 	setCommandCtx(null);
-}
-
-export async function createFreshSession(
-	ctx: ExtensionCommandContext,
-): Promise<{ cancelled: boolean }> {
-	return ctx.newSession({
-		withSession: async (nextCtx) => {
-			setCommandCtx(nextCtx);
-		},
-	});
 }

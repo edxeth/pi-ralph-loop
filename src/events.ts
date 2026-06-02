@@ -3,11 +3,7 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { finalizeLoop } from "./loop/finalize.js";
-import {
-	handleLoopAgentEnd,
-	handleLoopSessionStart,
-	handleLoopTurnEnd,
-} from "./loop-engine.js";
+import { handleLoopAgentEnd, handleLoopTurnEnd } from "./loop-engine.js";
 import { readState, updateState } from "./state.js";
 
 function isLoopRunning(cwd: string): boolean {
@@ -61,16 +57,25 @@ function handleBlockedSessionMutation(
 	return { cancel: true };
 }
 
-function handleSessionShutdown(ctx: ExtensionContext) {
+function handleSessionShutdown(
+	event: { reason?: "quit" | "reload" | "new" | "resume" | "fork" },
+	ctx: ExtensionContext,
+) {
 	const cwd = ctx.cwd;
 	const state = readState(cwd);
-	if (state?.running && !state.transitioning) {
-		updateState(cwd, { cancel_requested: true });
+	if (!state?.running) return;
+
+	if (state.transitioning) {
+		if (event.reason === "quit" || event.reason === "reload") {
+			finalizeLoop(ctx, cwd, "error", state.error_count);
+		}
+		return;
 	}
+
+	updateState(cwd, { cancel_requested: true });
 }
 
 function handleSessionStart(
-	pi: ExtensionAPI,
 	event: { reason: string },
 	ctx: ExtensionContext,
 ) {
@@ -83,13 +88,6 @@ function handleSessionStart(
 	}
 
 	restoreLoopStatus(ctx);
-
-	// When this is a Ralph-managed new session, set up the iteration and
-	// send the task.  The command handler has already returned at this point,
-	// so the agent is NOT streaming and sendUserMessage can start a fresh prompt.
-	if (event.reason === "new" && state.transitioning) {
-		handleLoopSessionStart(pi, ctx);
-	}
 }
 
 export function registerEventHandlers(pi: ExtensionAPI): void {
@@ -100,8 +98,10 @@ export function registerEventHandlers(pi: ExtensionAPI): void {
 	pi.on("session_before_tree", async (_event, ctx) =>
 		handleBlockedSessionMutation("tree", ctx),
 	);
-	pi.on("session_shutdown", async (_event, ctx) => handleSessionShutdown(ctx));
-	pi.on("session_start", handleSessionStart.bind(null, pi));
+	pi.on("session_shutdown", async (event, ctx) =>
+		handleSessionShutdown(event, ctx),
+	);
+	pi.on("session_start", handleSessionStart);
 	pi.on("turn_end", (event, ctx) => handleLoopTurnEnd(pi, ctx, event));
 	pi.on("agent_end", (event, ctx) => {
 		const messages = (

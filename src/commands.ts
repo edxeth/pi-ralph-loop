@@ -94,7 +94,7 @@ function formatStatusMessage(state: SavedLoop["state"]): string {
 }
 
 async function handleLoopCommand(
-	pi: ExtensionAPI,
+	_pi: ExtensionAPI,
 	args: string,
 	ctx: ExtensionCommandContext,
 ): Promise<void> {
@@ -121,7 +121,7 @@ async function handleLoopCommand(
 		}
 	}
 
-	await runLoop(pi, ctx, task, parsed.maxIterations, { bundleMode });
+	await runLoop(ctx, task, parsed.maxIterations, { bundleMode });
 }
 
 async function handleResumeCommand(
@@ -178,7 +178,7 @@ async function handleResumeCommand(
 		return;
 	}
 
-	await runLoop(pi, ctx, task, state.max_iterations, {
+	await runLoop(ctx, task, state.max_iterations, {
 		startIteration: state.iteration,
 		startedAt: state.started_at || new Date().toISOString(),
 		initialErrorCount: state.error_count,
@@ -187,7 +187,7 @@ async function handleResumeCommand(
 }
 
 async function handleRestartCommand(
-	pi: ExtensionAPI,
+	_pi: ExtensionAPI,
 	_args: string,
 	ctx: ExtensionCommandContext,
 ): Promise<void> {
@@ -215,7 +215,7 @@ async function handleRestartCommand(
 		`Restarting Ralph loop from iteration 1/${state.max_iterations} in a fresh session`,
 		"info",
 	);
-	await runLoop(pi, ctx, task, state.max_iterations, {
+	await runLoop(ctx, task, state.max_iterations, {
 		startIteration: 1,
 		startedAt: new Date().toISOString(),
 		initialErrorCount: 0,

@@ -212,11 +212,18 @@ function createHarness(): Harness {
 							contextWindow: 100_000,
 							percent: contextPercent,
 						},
+			sendUserMessage: (message: string) => {
+				sentMessages.push(message);
+				sentMessageOptions.push(undefined);
+			},
 			waitForIdle: async () => {
 				idleWaits++;
 				idle = true;
 			},
 			newSession: async (options?: {
+				setup?: (sessionManager: {
+					appendSessionInfo: (name: string) => void;
+				}) => Promise<void>;
 				withSession?: (ctx: ExtensionCommandContext) => Promise<void>;
 			}) => {
 				if (version !== activeContextVersion) {
@@ -224,6 +231,9 @@ function createHarness(): Harness {
 				}
 				newSessionCalls++;
 				activeContextVersion++;
+				await options?.setup?.({
+					appendSessionInfo: (name: string) => sessionNames.push(name),
+				});
 				await options?.withSession?.(makeCtx(activeContextVersion));
 				return { cancelled: false };
 			},
@@ -277,21 +287,18 @@ function createHarness(): Harness {
 	};
 }
 
-test("runLoop schedules initial fresh session after returning", async () => {
+test("runLoop starts the first iteration in a fresh session", async () => {
 	const h = createHarness();
 
-	await runLoop(h.pi, h.ctx, "task", 3);
+	await runLoop(h.ctx, "task", 3);
 
 	const state = h.readState();
-	assert.equal(h.newSessionCalls, 0);
+	assert.equal(h.newSessionCalls, 1);
 	assert.equal(state?.running, true);
 	assert.equal(state?.iteration, 1);
 	assert.equal(state?.max_iterations, 3);
-	// transitioning remains true until session_start fires
-	assert.equal(state?.transitioning, true);
-
-	await new Promise((resolve) => setTimeout(resolve, 50));
-	assert.equal(h.newSessionCalls, 1);
+	assert.equal(state?.transitioning, false);
+	assert.equal(h.sentMessages.at(-1), "task");
 });
 
 test("bundle NEXT accepts exactly one completed item", async () => {

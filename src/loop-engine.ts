@@ -9,11 +9,7 @@ import {
 	validateBundlePromise,
 } from "./loop/bundle-gates.js";
 import { rejectBundlePromise } from "./loop/bundle-rejections.js";
-import {
-	createFreshSession,
-	getCommandCtx,
-	setCommandCtx,
-} from "./loop/command-context.js";
+import { getCommandCtx, setCommandCtx } from "./loop/command-context.js";
 import { extractControlPromise } from "./loop/control-promise.js";
 import { finalizeLoop } from "./loop/finalize.js";
 import { sendWhenIdle } from "./loop/idle.js";
@@ -37,7 +33,6 @@ const FINAL_PROMISE_WARNING_NUDGE = [
 	"- <promise>NEXT</promise> only when this iteration unit is fully done",
 	"- <promise>COMPLETE</promise> only when ALL tasks are fully done",
 ].join("\n");
-const ITERATION_DELAY_MS = 500;
 // How long Ralph waits for Pi's auto-retry after a provider-error turn before
 // declaring the loop dead. Pi retries with exponential backoff and is idle
 // (not streaming) between attempts, so Ralph cannot use idleness as the
@@ -199,31 +194,85 @@ function handleStopPromise(ctx: ExtensionContext, state: RalphLoopState): void {
 	finalizeLoop(ctx, ctx.cwd, "manual_stop", state.error_count);
 }
 
-function scheduleInitialSessionTransition(
-	ctx: ExtensionCommandContext,
-	cwd: string,
-	errorCount: number,
+function formatIterationSessionName(state: RalphLoopState): string {
+	return `Ralph loop iteration ${state.iteration}/${state.max_iterations}`;
+}
+
+function markIterationStarted(
+	ctx: ExtensionContext,
+	state: RalphLoopState,
 ): void {
-	const timeout = setTimeout(async () => {
-		try {
-			const result = await createFreshSession(ctx);
-			if (result.cancelled) {
-				finalizeLoop(ctx, cwd, "error", errorCount);
-			}
-		} catch {
-			finalizeLoop(ctx, cwd, "error", errorCount);
+	resetIterationCounters();
+	setLoopStatus(ctx, state.iteration, state.max_iterations);
+	ctx.ui.notify(
+		`Ralph iteration ${state.iteration}/${state.max_iterations}`,
+		"info",
+	);
+	updateState(ctx.cwd, {
+		transitioning: false,
+		session_id: ctx.sessionManager.getSessionId(),
+		last_session_file: ctx.sessionManager.getSessionFile() ?? null,
+	});
+	if (state.bundle_mode) {
+		snapshotBundleIteration(ctx.cwd, state);
+	}
+}
+
+function startCurrentIteration(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	state: RalphLoopState,
+	task: string,
+): void {
+	markIterationStarted(ctx, state);
+	pi.setSessionName(formatIterationSessionName(state));
+	pi.sendUserMessage(task);
+}
+
+async function openFreshIterationSession(
+	ctx: ExtensionCommandContext,
+	errorCount: number,
+): Promise<void> {
+	const state = readState(ctx.cwd);
+	const task = getTaskBody(ctx.cwd);
+	if (!state?.running) return;
+	if (!task) {
+		finalizeLoop(ctx, ctx.cwd, "error", errorCount);
+		return;
+	}
+
+	try {
+		const result = await ctx.newSession({
+			setup: async (sessionManager) => {
+				sessionManager.appendSessionInfo(formatIterationSessionName(state));
+			},
+			withSession: async (nextCtx) => {
+				setCommandCtx(nextCtx);
+				const latest = readState(nextCtx.cwd);
+				if (!latest?.running) return;
+				try {
+					markIterationStarted(nextCtx, latest);
+					await nextCtx.sendUserMessage(task);
+				} catch {
+					finalizeLoop(nextCtx, nextCtx.cwd, "error", latest.error_count);
+				}
+			},
+		});
+		if (result.cancelled) {
+			finalizeLoop(ctx, ctx.cwd, "error", errorCount);
 		}
-	}, 0);
-	timeout.unref?.();
+	} catch {
+		finalizeLoop(ctx, ctx.cwd, "error", errorCount);
+	}
 }
 
 function scheduleNextIteration(
 	ctx: ExtensionContext,
 	state: RalphLoopState,
 ): void {
-	const timeout = setTimeout(async () => {
+	setTimeout(() => {
 		const cmdCtx = getCommandCtx();
-		if (!cmdCtx) {
+		if (!cmdCtx || cmdCtx.cwd !== ctx.cwd) {
 			ctx.ui.notify(
 				"Ralph loop error: lost command context for session transition",
 				"error",
@@ -231,16 +280,8 @@ function scheduleNextIteration(
 			finalizeLoop(ctx, ctx.cwd, "error", state.error_count);
 			return;
 		}
-		try {
-			const result = await createFreshSession(cmdCtx);
-			if (result.cancelled) {
-				finalizeLoop(cmdCtx, cmdCtx.cwd, "error", state.error_count);
-			}
-		} catch {
-			finalizeLoop(cmdCtx, cmdCtx.cwd, "error", state.error_count);
-		}
-	}, ITERATION_DELAY_MS);
-	timeout.unref?.();
+		void openFreshIterationSession(cmdCtx, state.error_count);
+	}, 0);
 }
 
 function handleNextPromise(
@@ -338,53 +379,6 @@ function handleMissingPromise(
 	);
 }
 
-function startIteration(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-	state: RalphLoopState,
-	task: string,
-): void {
-	resetIterationCounters();
-	setLoopStatus(ctx, state.iteration, state.max_iterations);
-	ctx.ui.notify(
-		`Ralph iteration ${state.iteration}/${state.max_iterations}`,
-		"info",
-	);
-	pi.setSessionName(
-		`Ralph loop iteration ${state.iteration}/${state.max_iterations}`,
-	);
-	updateState(ctx.cwd, {
-		transitioning: false,
-		session_id: ctx.sessionManager.getSessionId(),
-		last_session_file: ctx.sessionManager.getSessionFile() ?? null,
-	});
-	if (state.bundle_mode) {
-		snapshotBundleIteration(ctx.cwd, state);
-	}
-	pi.sendUserMessage(task);
-}
-
-// ── Session-start handler (called from events.ts) ───────────────────────
-/**
- * Called when a new session starts while a Ralph loop is transitioning.
- * Sends the task text as a user message to kick off the iteration.
- *
- * At this point the command handler has returned, so the agent is NOT
- * streaming and `sendUserMessage` can start a fresh prompt.
- */
-export function handleLoopSessionStart(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-): void {
-	const state = readState(ctx.cwd);
-	if (!state?.running || !state.transitioning) return;
-
-	const task = getTaskBody(ctx.cwd);
-	if (!task) return;
-
-	startIteration(pi, ctx, state, task);
-}
-
 // ── Agent-end handler (called from events.ts) ───────────────────────────
 type AgentEndMessages = Array<{
 	role: string;
@@ -467,7 +461,6 @@ export function handleLoopAgentEnd(
 // ── Command-level entry points ──────────────────────────────────────────
 
 export async function runLoop(
-	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
 	task: string,
 	maxIterations: number,
@@ -516,7 +509,7 @@ export async function runLoop(
 
 	ctx.ui.notify(`Ralph loop started (max ${maxIterations} iterations)`, "info");
 
-	scheduleInitialSessionTransition(ctx, cwd, initialErrorCount);
+	await openFreshIterationSession(ctx, initialErrorCount);
 }
 
 /**
@@ -582,14 +575,12 @@ export async function resumeCurrentSession(
 
 	if (hasTurns) {
 		setLoopStatus(ctx, state.iteration, state.max_iterations);
-		pi.setSessionName(
-			`Ralph loop iteration ${state.iteration}/${state.max_iterations}`,
-		);
+		pi.setSessionName(formatIterationSessionName(state));
 		sendWhenIdle(pi, ctx, "continue");
 		return;
 	}
 
-	startIteration(pi, ctx, state, task);
+	startCurrentIteration(pi, ctx, state, task);
 }
 
 /**
@@ -615,5 +606,5 @@ export async function continueLoop(
 	}
 
 	setCommandCtx(ctx);
-	startIteration(pi, ctx, state, task);
+	startCurrentIteration(pi, ctx, state, task);
 }

@@ -124,17 +124,38 @@ test("session_shutdown marks cancellation request", () => {
 	assert.equal(readState(h.cwd)?.cancel_requested, true);
 });
 
-test("session_start sends task text for Ralph-created new sessions", () => {
+test("session_shutdown finalizes a quit during a transition", () => {
+	const h = createEventsHarness();
+	writeState(h.cwd, makeEventsState({ transitioning: true }), "task");
+
+	h.handlers.get("session_shutdown")?.({ reason: "quit" }, h.ctx);
+
+	const state = readState(h.cwd);
+	assert.equal(state?.running, false);
+	assert.equal(state?.stop_reason, "error");
+	assert.equal(state?.transitioning, false);
+});
+
+test("session_shutdown preserves Ralph-managed new-session transitions", () => {
+	const h = createEventsHarness();
+	writeState(h.cwd, makeEventsState({ transitioning: true }), "task");
+
+	h.handlers.get("session_shutdown")?.({ reason: "new" }, h.ctx);
+
+	const state = readState(h.cwd);
+	assert.equal(state?.running, true);
+	assert.equal(state?.transitioning, true);
+	assert.equal(state?.stop_reason, null);
+});
+
+test("session_start restores status for Ralph-created new sessions", () => {
 	const h = createEventsHarness();
 	writeState(h.cwd, makeEventsState({ transitioning: true }), "my task prompt");
 
 	h.handlers.get("session_start")?.({ reason: "new" }, h.ctx);
 
-	// Should send the task text directly.
-	assert.deepEqual(h.sentMessages, ["my task prompt"]);
-	// Should set the session name.
-	assert.ok(h.sessionNames.some((n) => n.includes("2/5")));
-	// Should restore status.
+	assert.deepEqual(h.sentMessages, []);
+	assert.deepEqual(h.sessionNames, []);
 	assert.ok(
 		h.statusUpdates.some(
 			(u) => u.key === "ralph-loop" && u.value !== undefined,
