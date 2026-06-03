@@ -10,7 +10,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { loadRalphBundle, parseBundleItemsJson } from "../src/bundle/index.ts";
+import {
+	evaluateVerificationGates,
+	loadRalphBundle,
+	parseBundleItemsJson,
+} from "../src/bundle/index.ts";
 
 function withWorkspace(fn: (root: string) => void): void {
 	const root = mkdtempSync(path.join(tmpdir(), "ralph-bundle-"));
@@ -29,12 +33,12 @@ function writeBundle(root: string, itemsJson = validItemsJson()): void {
 	writeFileSync(path.join(root, ".ralph/progress.md"), "progress");
 }
 
-function validItemsJson(): string {
+function itemsJsonWithGate(command: string): string {
 	return JSON.stringify({
 		version: 1,
 		runtime_contract: {
 			source_docs: [".pi/plans/prds/example.md"],
-			verification_gates: [{ name: "tests", command: "npm test" }],
+			verification_gates: [{ name: "tests", command }],
 			require_progress_append: true,
 			require_one_item_per_iteration: true,
 			require_clean_source_docs: true,
@@ -52,6 +56,14 @@ function validItemsJson(): string {
 		],
 		extra_top_level: "allowed",
 	});
+}
+
+function validItemsJson(): string {
+	return itemsJsonWithGate("npm test");
+}
+
+function nodeScriptCommand(scriptPath: string): string {
+	return `${JSON.stringify(process.execPath)} ${JSON.stringify(scriptPath)}`;
 }
 
 test("parseBundleItemsJson accepts the generated bundle schema and optional metadata", () => {
@@ -215,5 +227,33 @@ test("loadRalphBundle rejects missing required files and unsafe symlinks", () =>
 			() => loadRalphBundle(root),
 			/prompt\.md must not be a symlink/,
 		);
+	});
+});
+
+test("evaluateVerificationGates allows noisy passing commands", () => {
+	withWorkspace((root) => {
+		const scriptPath = path.join(root, "noisy-pass.js");
+		writeFileSync(scriptPath, `process.stdout.write("x".repeat(20_000));\n`);
+		writeBundle(root, itemsJsonWithGate(nodeScriptCommand(scriptPath)));
+
+		assert.equal(evaluateVerificationGates(loadRalphBundle(root)), null);
+	});
+});
+
+test("evaluateVerificationGates reports noisy failures as command failures", () => {
+	withWorkspace((root) => {
+		const scriptPath = path.join(root, "noisy-fail.js");
+		writeFileSync(
+			scriptPath,
+			`process.stdout.write("x".repeat(20_000));\nprocess.exit(1);\n`,
+		);
+		writeBundle(root, itemsJsonWithGate(nodeScriptCommand(scriptPath)));
+
+		const failure = evaluateVerificationGates(loadRalphBundle(root));
+
+		assert.notEqual(failure, null);
+		assert.match(failure ?? "", /verification gate tests exited with code 1/);
+		assert.doesNotMatch(failure ?? "", /timed out/);
+		assert.match(failure ?? "", /output truncated/);
 	});
 });
