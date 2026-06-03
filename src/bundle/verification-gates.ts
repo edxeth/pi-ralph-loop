@@ -1,31 +1,21 @@
 import { spawnSync } from "node:child_process";
-import {
-	closeSync,
-	mkdtempSync,
-	openSync,
-	readSync,
-	rmSync,
-	statSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { isRecord } from "./schema.js";
 import type { RalphBundle, VerificationGate } from "./types.js";
 
 const VERIFICATION_GATE_TIMEOUT_MS = 120_000;
 const VERIFICATION_GATE_OUTPUT_LIMIT = 4_000;
-const VERIFICATION_GATE_OUTPUT_READ_LIMIT = VERIFICATION_GATE_OUTPUT_LIMIT + 1;
+const VERIFICATION_GATE_RUNNER_OUTPUT_LIMIT = 64 * 1024;
+const VERIFICATION_GATE_RUNNER_PATH = fileURLToPath(
+	new URL("./verification-gate-runner.mjs", import.meta.url),
+);
 
 type VerificationGateFailure = {
 	reason: string;
 	stdout: string;
 	stderr: string;
 };
-
-type VerificationGateResult =
-	| { ok: true }
-	| { ok: false; failure: VerificationGateFailure };
 
 function capGateOutput(output: unknown): string {
 	const text = Buffer.isBuffer(output)
@@ -34,21 +24,6 @@ function capGateOutput(output: unknown): string {
 	const trimmed = text.trim();
 	if (trimmed.length <= VERIFICATION_GATE_OUTPUT_LIMIT) return trimmed;
 	return `${trimmed.slice(0, VERIFICATION_GATE_OUTPUT_LIMIT)}\n... output truncated ...`;
-}
-
-function readCappedFile(pathname: string): string {
-	const size = statSync(pathname).size;
-	if (size === 0) return "";
-
-	const bytesToRead = Math.min(size, VERIFICATION_GATE_OUTPUT_READ_LIMIT);
-	const fd = openSync(pathname, "r");
-	try {
-		const buffer = Buffer.alloc(bytesToRead);
-		const bytesRead = readSync(fd, buffer, 0, bytesToRead, 0);
-		return capGateOutput(buffer.subarray(0, bytesRead));
-	} finally {
-		closeSync(fd);
-	}
 }
 
 function getErrorCode(error: unknown): string | null {
@@ -61,81 +36,72 @@ function getErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-function closeFile(fd: number | null): null {
-	if (fd !== null) closeSync(fd);
-	return null;
+function createRunnerFailure(reason: string, output = ""): VerificationGateFailure {
+	return { reason, stdout: "", stderr: capGateOutput(output) };
 }
 
-function createGateFailure(
-	reason: string,
-	stdout: string,
-	stderr: string,
-): VerificationGateResult {
-	return { ok: false, failure: { reason, stdout, stderr } };
+function parseRunnerFailure(output: string): VerificationGateFailure | null {
+	const parsed: unknown = JSON.parse(output);
+	if (!isRecord(parsed)) {
+		return createRunnerFailure("verification runner returned invalid output", output);
+	}
+	if (parsed.ok === true) return null;
+
+	const failure = parsed.failure;
+	if (!isRecord(failure)) {
+		return createRunnerFailure("verification runner returned invalid failure", output);
+	}
+
+	return {
+		reason:
+			typeof failure.reason === "string"
+				? failure.reason
+				: "verification runner failed",
+		stdout: typeof failure.stdout === "string" ? failure.stdout : "",
+		stderr: typeof failure.stderr === "string" ? failure.stderr : "",
+	};
 }
 
-function executeVerificationGate(
+function runVerificationGate(
 	root: string,
 	gate: VerificationGate,
-): VerificationGateResult {
-	const tempDir = mkdtempSync(path.join(tmpdir(), "ralph-gate-"));
-	const stdoutPath = path.join(tempDir, "stdout.log");
-	const stderrPath = path.join(tempDir, "stderr.log");
-	let stdoutFd: number | null = null;
-	let stderrFd: number | null = null;
+): VerificationGateFailure | null {
+	const result = spawnSync(process.execPath, [VERIFICATION_GATE_RUNNER_PATH], {
+		input: JSON.stringify({
+			command: gate.command,
+			cwd: root,
+			outputLimit: VERIFICATION_GATE_OUTPUT_LIMIT,
+			timeoutMs: VERIFICATION_GATE_TIMEOUT_MS,
+		}),
+		encoding: "utf8",
+		maxBuffer: VERIFICATION_GATE_RUNNER_OUTPUT_LIMIT,
+		stdio: ["pipe", "pipe", "pipe"],
+	});
+
+	const errorCode = getErrorCode(result.error);
+	if (errorCode === "ENOBUFS") {
+		return createRunnerFailure("verification runner produced too much output");
+	}
+	if (result.error) {
+		return createRunnerFailure(
+			`failed to run verification runner (${getErrorMessage(result.error)})`,
+			result.stderr,
+		);
+	}
+	if (result.status !== 0) {
+		return createRunnerFailure(
+			`verification runner exited with code ${result.status ?? "unknown"}`,
+			result.stderr || result.stdout,
+		);
+	}
 
 	try {
-		stdoutFd = openSync(stdoutPath, "w");
-		stderrFd = openSync(stderrPath, "w");
-		const result = spawnSync(gate.command, {
-			cwd: root,
-			shell: true,
-			stdio: ["ignore", stdoutFd, stderrFd],
-			timeout: VERIFICATION_GATE_TIMEOUT_MS,
-		});
-		stdoutFd = closeFile(stdoutFd);
-		stderrFd = closeFile(stderrFd);
-
-		const stdout = readCappedFile(stdoutPath);
-		const stderr = readCappedFile(stderrPath);
-		if (result.status === 0 && result.signal === null && !result.error) {
-			return { ok: true };
-		}
-
-		const errorCode = getErrorCode(result.error);
-		if (errorCode === "ETIMEDOUT") {
-			return createGateFailure("timed out", stdout, stderr);
-		}
-		if (errorCode === "ENOBUFS") {
-			return createGateFailure(
-				"exceeded the output capture buffer",
-				stdout,
-				stderr,
-			);
-		}
-		if (typeof result.status === "number") {
-			return createGateFailure(
-				`exited with code ${result.status}`,
-				stdout,
-				stderr,
-			);
-		}
-		if (typeof result.signal === "string") {
-			return createGateFailure(
-				`terminated by signal ${result.signal}`,
-				stdout,
-				stderr,
-			);
-		}
-		return createGateFailure(
-			`failed to run (${getErrorMessage(result.error)})`,
-			stdout,
-			stderr,
+		return parseRunnerFailure(result.stdout);
+	} catch (err) {
+		return createRunnerFailure(
+			`verification runner returned malformed output (${getErrorMessage(err)})`,
+			result.stderr || result.stdout,
 		);
-	} finally {
-		stdoutFd = closeFile(stdoutFd);
-		stderrFd = closeFile(stderrFd);
-		rmSync(tempDir, { recursive: true, force: true });
 	}
 }
 
@@ -150,8 +116,8 @@ function formatGateFailure(
 export function evaluateVerificationGates(bundle: RalphBundle): string | null {
 	const gates = bundle.items.runtime_contract?.verification_gates ?? [];
 	for (const gate of gates) {
-		const result = executeVerificationGate(bundle.root, gate);
-		if (!result.ok) return formatGateFailure(gate, result.failure);
+		const failure = runVerificationGate(bundle.root, gate);
+		if (failure) return formatGateFailure(gate, failure);
 	}
 	return null;
 }

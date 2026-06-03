@@ -257,3 +257,20 @@ test("evaluateVerificationGates reports noisy failures as command failures", () 
 		assert.match(failure ?? "", /output truncated/);
 	});
 });
+
+test("evaluateVerificationGates reports truncated whitespace-only output", () => {
+	withWorkspace((root) => {
+		const scriptPath = path.join(root, "whitespace-fail.js");
+		writeFileSync(
+			scriptPath,
+			`process.stdout.write(" ".repeat(20_000));\nprocess.exit(1);\n`,
+		);
+		writeBundle(root, itemsJsonWithGate(nodeScriptCommand(scriptPath)));
+
+		const failure = evaluateVerificationGates(loadRalphBundle(root));
+
+		assert.notEqual(failure, null);
+		assert.match(failure ?? "", /verification gate tests exited with code 1/);
+		assert.match(failure ?? "", /output truncated/);
+	});
+});
