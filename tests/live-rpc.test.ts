@@ -547,17 +547,25 @@ test("live pi RPC: accepted NEXT opens a fresh session even when a passing gate 
 		const sessionsBefore = h.listSessions().length;
 		h.sendPrompt('/ralph-loop "@.ralph/prompt.md" --max-iterations=2');
 
-		const state = await h.waitForFinalState(/stop_reason:\s*"complete"/, 150_000);
+		// Wait for the loop to finish for ANY reason, then assert on the reason.
+		// This fails fast and crisply on the bug (stop_reason "error") instead of
+		// hanging until the timeout waiting for a "complete" that never comes.
+		const state = await h.waitForState(/running:\s*false/, 150_000);
 
+		// NEXT was accepted on the first try -- the noisy passing gate did not
+		// reject it, so the loop did not error out under repeated rejections.
+		assert.match(
+			state,
+			/stop_reason:\s*"complete"/,
+			`loop did not complete; stop_reason was ${h.stateField(state, "stop_reason")}, bundle_rejection_count ${h.stateField(state, "bundle_rejection_count")} (noisy gate likely rejected NEXT)`,
+		);
 		// The fresh session for iteration 2 was actually opened.
 		assert.match(state, /iteration:\s*2/);
 		assert.ok(
 			h.listSessions().length >= sessionsBefore + 2,
 			"each iteration must open a fresh session; NEXT handoff was blocked",
 		);
-		// NEXT was accepted on the first try -- the noisy gate did not reject it.
 		assert.match(state, /bundle_rejection_count:\s*0/);
-		assert.doesNotMatch(state, /stop_reason:\s*"error"/);
 	} finally {
 		await h.stop();
 	}
