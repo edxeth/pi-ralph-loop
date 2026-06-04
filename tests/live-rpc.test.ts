@@ -246,6 +246,42 @@ function writeBundle(
 		)}\n`,
 	);
 }
+// A two-item bundle whose only runtime_contract verification gate PASSES
+// (exit 0) but emits ~20 KB of output. Pre-fix, the buffered gate runner
+// misread that volume as a failure and rejected NEXT, so the iteration-2 fresh
+// session was never opened. require_progress_append + require_one_item is what
+// the fake driver provider satisfies each iteration.
+function writeNoisyGateBundle(workdir: string): void {
+	const ralphDir = join(workdir, ".ralph");
+	mkdirSync(ralphDir, { recursive: true });
+	const noisyScript = join(workdir, "noisy-pass.js");
+	writeFileSync(noisyScript, `process.stdout.write("x".repeat(20000));\n`);
+	const gateCommand = `${JSON.stringify(process.execPath)} ${JSON.stringify(noisyScript)}`;
+
+	writeFileSync(join(ralphDir, "plan.md"), "# Noisy gate plan\n");
+	writeFileSync(join(ralphDir, "prompt.md"), "Drive the bundle one item per iteration.");
+	writeFileSync(join(ralphDir, "progress.md"), "# progress\n");
+	writeFileSync(
+		join(ralphDir, "items.json"),
+		`${JSON.stringify(
+			{
+				version: 1,
+				runtime_contract: {
+					verification_gates: [{ name: "noisy", command: gateCommand }],
+					require_progress_append: true,
+					require_one_item_per_iteration: true,
+					require_commit: false,
+				},
+				items: [
+					{ category: "functional", description: "Item one.", steps: ["a"], passes: false, regression_notes: "" },
+					{ category: "functional", description: "Item two.", steps: ["b"], passes: false, regression_notes: "" },
+				],
+			},
+			null,
+			2,
+		)}\n`,
+	);
+}
 
 test("live pi RPC: NEXT advances and COMPLETE stops", {
 	skip: !SHOULD_RUN,
@@ -473,6 +509,63 @@ test("live pi RPC: resume nudges 'continue' when no promise was emitted yet", {
 			seedCount,
 			"resume must never re-seed the prompt",
 		);
+	} finally {
+		await h.stop();
+	}
+});
+
+// ── Regression: noisy-but-passing verification gate must not block the
+// fresh-session-after-NEXT handoff ──────────────────────────────────────
+//
+// Symptom this guards: "a new session never starts after <promise>NEXT</promise>".
+// Root cause it reproduces: a verification gate that PASSES (exit 0) but emits
+// more output than the old buffered runner allowed was misclassified as a
+// failure. validateBundlePromise then rejected NEXT, handleNextPromise returned
+// before scheduleNextIteration, and openFreshIterationSession was never reached.
+// The handoff machinery is fine; it was simply never invoked.
+//
+// Pre-fix (buffered gate): NEXT rejected up to MAX_BUNDLE_REJECTIONS, loop ends
+//   stop_reason "error", stuck at iteration 1, only one session file.
+// Post-fix (file-backed gate): NEXT accepted, iteration 2 opens a FRESH session,
+//   second item completes, loop ends "complete" with >= 2 session files.
+test("live pi RPC: accepted NEXT opens a fresh session even when a passing gate is noisy", {
+	skip: !SHOULD_RUN,
+}, async () => {
+	const fakeProvider = resolve(
+		process.cwd(),
+		"tests",
+		"fixtures",
+		"fake-driver-provider.ts",
+	);
+	const h = createRpcHarness({
+		extraExtensions: [fakeProvider],
+		model: "ralph-fake/driver",
+		env: { RALPH_FAKE_API_KEY: "unused-but-present" },
+	});
+	try {
+		writeNoisyGateBundle(h.workdir);
+		const sessionsBefore = h.listSessions().length;
+		h.sendPrompt('/ralph-loop "@.ralph/prompt.md" --max-iterations=2');
+
+		// Wait for the loop to finish for ANY reason, then assert on the reason.
+		// This fails fast and crisply on the bug (stop_reason "error") instead of
+		// hanging until the timeout waiting for a "complete" that never comes.
+		const state = await h.waitForState(/running:\s*false/, 150_000);
+
+		// NEXT was accepted on the first try -- the noisy passing gate did not
+		// reject it, so the loop did not error out under repeated rejections.
+		assert.match(
+			state,
+			/stop_reason:\s*"complete"/,
+			`loop did not complete; stop_reason was ${h.stateField(state, "stop_reason")}, bundle_rejection_count ${h.stateField(state, "bundle_rejection_count")} (noisy gate likely rejected NEXT)`,
+		);
+		// The fresh session for iteration 2 was actually opened.
+		assert.match(state, /iteration:\s*2/);
+		assert.ok(
+			h.listSessions().length >= sessionsBefore + 2,
+			"each iteration must open a fresh session; NEXT handoff was blocked",
+		);
+		assert.match(state, /bundle_rejection_count:\s*0/);
 	} finally {
 		await h.stop();
 	}
