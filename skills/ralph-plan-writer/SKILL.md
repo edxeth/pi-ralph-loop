@@ -270,9 +270,11 @@ Ban bypasses in the runtime prompt: no skipped checks, weakened tests, `--no-ver
 
 ## Runtime enforcement to account for
 
-The extension rejects NEXT if zero or multiple items move from `passes:false` to `passes:true`, immutable item fields change, progress append checks fail, listed source docs change when `source_docs` is non-empty, configured verification gates fail, or `require_commit: true` is set and git HEAD did not change in the Ralph workspace root.
+The extension rejects NEXT if zero or multiple items move from `passes:false` to `passes:true`, immutable item fields change, progress append checks fail, listed source docs change when `source_docs` is non-empty, or `require_commit: true` is set and git HEAD did not change in the Ralph workspace root.
 
-The extension rejects COMPLETE if any item has `passes:false`, immutable item fields change, progress checks fail, listed source docs change when `source_docs` is non-empty, verification gates fail, or `require_commit: true` is set and git HEAD did not change in the Ralph workspace root.
+The extension rejects COMPLETE if any item has `passes:false`, immutable item fields change, progress checks fail, listed source docs change when `source_docs` is non-empty, or `require_commit: true` is set and git HEAD did not change in the Ralph workspace root.
+
+The extension does NOT run `verification_gates` at promise emission. They are instructions surfaced to the runtime agent, which must run them during its iteration before emitting a promise. Re-running gates in the harness froze the loop on heavy suites and duplicated the agent's own run, so gate execution is the agent's responsibility, not an enforced runtime check.
 
 Rejected promises continue in the same session with a corrective prompt. Accepted NEXT starts the next fresh session. The current runtime agent must not start the next item itself. Accepted COMPLETE ends the loop.
 

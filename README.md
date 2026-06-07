@@ -43,7 +43,7 @@ A raw Ralph loop can be one shell script. That works until you want to run it ov
 - `/ralph-stop`, `/ralph-status`, `/ralph-resume`, and `/ralph-restart` commands
 - persisted loop state in `.ralph/loop.md`
 - promise nudges when the agent forgets the final control tag
-- runtime checks for item mutation, progress append, verification gates, commits, and protected source docs
+- runtime checks for item mutation, progress append, commits, and protected source docs
 - the bundled `ralph-plan-writer` skill
 
 ## Start with the plan writer
@@ -159,7 +159,7 @@ Useful `runtime_contract` fields:
 
 | Field | Effect |
 | --- | --- |
-| `verification_gates` | Commands Ralph runs before accepting `NEXT` or `COMPLETE`. |
+| `verification_gates` | Commands the agent must run during its iteration before emitting a promise. Listed here so the agent knows what to verify; Ralph does not re-run them at promise emission (that froze the loop on heavy suites). Advisory, not harness-enforced. |
 | `require_progress_append` | `NEXT` requires `.ralph/progress.md` to grow. |
 | `require_one_item_per_iteration` | `NEXT` requires exactly one item to move from `passes:false` to `passes:true`. |
 | `require_commit` | When `true`, `NEXT` and `COMPLETE` require git HEAD to change during the iteration. Omit or set `false` when commits are not required. |

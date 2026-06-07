@@ -408,60 +408,26 @@ test("bundle NEXT survives agent restoring stale loop state", async () => {
 	assert.equal(h.newSessionCalls, 1);
 });
 
-test("bundle NEXT runs configured verification gates", async () => {
+test("bundle NEXT does not run configured verification gates (advisory only)", async () => {
 	const h = createHarness();
-	writeBundleItems(h.cwd, [false], {
+	// A gate command that would FAIL if Ralph ran it. Ralph must not run it:
+	// verification_gates are instructions for the agent, not harness-enforced.
+	const failingGate = {
 		verification_gates: [
-			{ name: "pass", command: 'node -e "process.exit(0)"' },
+			{ name: "would-fail", command: 'node -e "process.exit(2)"' },
 		],
-	});
+	};
+	writeBundleItems(h.cwd, [false], failingGate);
 	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
 
 	await continueLoop(h.pi, h.ctx);
-	writeBundleItems(h.cwd, [true], {
-		verification_gates: [
-			{ name: "pass", command: 'node -e "process.exit(0)"' },
-		],
-	});
+	writeBundleItems(h.cwd, [true], failingGate);
 	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
 
+	// The loop advances even though the gate command would have failed.
 	assert.equal(h.readState()?.iteration, 2);
 	await new Promise((r) => setTimeout(r, 600));
 	assert.equal(h.newSessionCalls, 1);
-});
-
-test("bundle NEXT rejects failed verification gates", async () => {
-	const h = createHarness();
-	writeBundleItems(h.cwd, [false], {
-		verification_gates: [
-			{
-				name: "fail",
-				command: "node -e \"console.error('bad gate'); process.exit(2)\"",
-			},
-		],
-	});
-	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
-
-	await continueLoop(h.pi, h.ctx);
-	writeBundleItems(h.cwd, [true], {
-		verification_gates: [
-			{
-				name: "fail",
-				command: "node -e \"console.error('bad gate'); process.exit(2)\"",
-			},
-		],
-	});
-	h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
-
-	assert.equal(h.readState()?.iteration, 1);
-	assert.equal(h.newSessionCalls, 0);
-	assert.match(
-		h.notifications.at(-1)?.message ?? "",
-		/verification gate fail exited with code 2/,
-	);
-	await new Promise((resolve) => setTimeout(resolve, 50));
-	assert.match(h.sentMessages.at(-1) ?? "", /bad gate/);
-	assert.equal(h.sentMessageOptions.at(-1), undefined);
 });
 
 test("bundle NEXT rejects zero completed items", async () => {
@@ -1019,14 +985,13 @@ test("bundle COMPLETE rejects unfinished items", async () => {
 	assert.equal(h.sentMessageOptions.at(-1), undefined);
 });
 
-test("bundle COMPLETE rejects failed verification gates", async () => {
+test("bundle COMPLETE does not run configured verification gates (advisory only)", async () => {
 	const h = createHarness();
+	// A gate command that would FAIL if Ralph ran it. COMPLETE must still finalize:
+	// the harness does not re-run verification_gates at promise emission.
 	writeBundleItems(h.cwd, [true], {
 		verification_gates: [
-			{
-				name: "complete",
-				command: "node -e \"console.error('complete bad'); process.exit(3)\"",
-			},
+			{ name: "would-fail", command: 'node -e "process.exit(3)"' },
 		],
 	});
 	h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
@@ -1035,16 +1000,8 @@ test("bundle COMPLETE rejects failed verification gates", async () => {
 	h.simulateAgentEnd({ text: "All done\n<promise>COMPLETE</promise>" });
 
 	const state = h.readState();
-	assert.equal(state?.running, true);
-	assert.equal(state?.stop_reason, null);
-	assert.equal(h.newSessionCalls, 0);
-	assert.match(
-		h.notifications.at(-1)?.message ?? "",
-		/verification gate complete exited with code 3/,
-	);
-	await new Promise((resolve) => setTimeout(resolve, 50));
-	assert.match(h.sentMessages.at(-1) ?? "", /complete bad/);
-	assert.equal(h.sentMessageOptions.at(-1), undefined);
+	assert.equal(state?.running, false);
+	assert.equal(state?.stop_reason, "complete");
 });
 
 test("bundle COMPLETE rejects immutable item changes", async () => {

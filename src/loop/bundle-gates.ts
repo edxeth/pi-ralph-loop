@@ -4,7 +4,6 @@ import {
 	evaluateBundleFileGate,
 	evaluateCompleteGate,
 	evaluateNextGate,
-	evaluateVerificationGates,
 	loadRalphBundle,
 } from "../bundle/index.js";
 import { updateState } from "../state.js";
@@ -38,11 +37,16 @@ export function validateBundlePromise(
 	try {
 		const bundle = loadRalphBundle(cwd);
 		const snapshot = getValidationSnapshot(cwd, state);
+		// verification_gates are intentionally NOT executed here. They stay in
+		// items.json as instructions surfaced to the agent, which runs them during
+		// its iteration before emitting a promise. Ralph does not re-run them at
+		// promise emission: re-running a heavy gate (e.g. a full test suite) froze
+		// the loop and duplicated work the agent already did. Item, progress, and
+		// commit gates below are cheap and still enforced.
 		if (promise === "NEXT") {
 			return (
 				evaluateNextGate(snapshot.bundle_items_snapshot, bundle.items.items) ??
-				evaluateBundleFileGate(bundle, snapshot) ??
-				evaluateVerificationGates(bundle)
+				evaluateBundleFileGate(bundle, snapshot)
 			);
 		}
 
@@ -50,9 +54,7 @@ export function validateBundlePromise(
 			evaluateCompleteGate(
 				snapshot.bundle_items_snapshot,
 				bundle.items.items,
-			) ??
-			evaluateBundleCompleteFileGate(bundle, snapshot) ??
-			evaluateVerificationGates(bundle)
+			) ?? evaluateBundleCompleteFileGate(bundle, snapshot)
 		);
 	} catch (err) {
 		return err instanceof Error ? err.message : String(err);
