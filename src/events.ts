@@ -67,7 +67,12 @@ function handleSessionShutdown(
 
 	if (state.transitioning) {
 		if (event.reason === "quit" || event.reason === "reload") {
-			finalizeLoop(ctx, cwd, "error", state.error_count);
+			// A NEXT was already accepted and the iteration advanced, but the
+			// fresh-session handoff was cut off by host/stdin shutdown. This is a
+			// committed handoff, not a loop failure: mark it resumable so
+			// /ralph-resume continues the saved iteration instead of treating a
+			// valid promise as an unrecoverable error.
+			finalizeLoop(ctx, cwd, "interrupted", state.error_count);
 		}
 		return;
 	}
@@ -83,7 +88,17 @@ function handleSessionStart(
 	if (!state?.running) return;
 
 	if (event.reason === "startup") {
-		finalizeLoop(ctx, ctx.cwd, "error", state.error_count);
+		// Pi booted and found a loop still marked running, so the previous
+		// process died without a clean shutdown event (hard crash, kill, OOM).
+		// If it died mid-handoff after a committed NEXT, mark it resumable so
+		// /ralph-resume can continue the saved iteration; otherwise treat the
+		// interrupted iteration as an error.
+		finalizeLoop(
+			ctx,
+			ctx.cwd,
+			state.transitioning ? "interrupted" : "error",
+			state.error_count,
+		);
 		return;
 	}
 

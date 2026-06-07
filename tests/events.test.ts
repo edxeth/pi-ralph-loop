@@ -124,7 +124,7 @@ test("session_shutdown marks cancellation request", () => {
 	assert.equal(readState(h.cwd)?.cancel_requested, true);
 });
 
-test("session_shutdown finalizes a quit during a transition", () => {
+test("session_shutdown leaves a quit during a committed handoff resumable", () => {
 	const h = createEventsHarness();
 	writeState(h.cwd, makeEventsState({ transitioning: true }), "task");
 
@@ -132,7 +132,8 @@ test("session_shutdown finalizes a quit during a transition", () => {
 
 	const state = readState(h.cwd);
 	assert.equal(state?.running, false);
-	assert.equal(state?.stop_reason, "error");
+	// Resumable, not a fatal error: a valid NEXT already advanced the iteration.
+	assert.equal(state?.stop_reason, "interrupted");
 	assert.equal(state?.transitioning, false);
 });
 
@@ -171,4 +172,28 @@ test("session_start does nothing for non-transitioning sessions", () => {
 
 	// Should not send any messages.
 	assert.deepEqual(h.sentMessages, []);
+});
+
+test("session_start on startup marks a crashed committed handoff resumable", () => {
+	const h = createEventsHarness();
+	writeState(h.cwd, makeEventsState({ transitioning: true }), "task");
+
+	h.handlers.get("session_start")?.({ reason: "startup" }, h.ctx);
+
+	const state = readState(h.cwd);
+	assert.equal(state?.running, false);
+	// A NEXT already advanced the iteration before the crash; keep it resumable.
+	assert.equal(state?.stop_reason, "interrupted");
+});
+
+test("session_start on startup errors a crashed mid-iteration loop", () => {
+	const h = createEventsHarness();
+	writeState(h.cwd, makeEventsState({ transitioning: false }), "task");
+
+	h.handlers.get("session_start")?.({ reason: "startup" }, h.ctx);
+
+	const state = readState(h.cwd);
+	assert.equal(state?.running, false);
+	// No committed handoff: a mid-iteration crash is still a fatal error.
+	assert.equal(state?.stop_reason, "error");
 });
