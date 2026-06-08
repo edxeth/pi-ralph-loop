@@ -1,6 +1,6 @@
 {
 	"name": "pi-ralph-loop",
-	"version": "1.0.7",
+	"version": "1.1.0",
 	"description": "Ralph Wiggum loop extension for pi — iterative task execution with fresh context windows",
 	"type": "module",
 	"keywords": [
