@@ -777,6 +777,46 @@ test("agent_end missing control promise queues continue nudge", async () => {
 	assert.equal(typeof h.widgets.at(-1)?.content, "function");
 });
 
+test("missing-promise chain fails on the fifth total no-promise reply", async () => {
+	const h = createHarness();
+	h.writeState(makeBaseState({ transitioning: false }));
+	await continueLoop(h.pi, h.ctx);
+
+	for (let i = 0; i < 4; i++) {
+		h.simulateAgentEnd({ text: `Missing promise ${i + 1}` });
+	}
+	assert.equal(h.readState()?.running, true);
+
+	h.simulateAgentEnd({ text: "Missing promise 5" });
+
+	assert.equal(h.readState()?.running, false);
+	assert.equal(h.readState()?.stop_reason, "error");
+});
+
+test("provider error resets the missing-promise nudge chain", async () => {
+	const h = createHarness();
+	h.writeState(makeBaseState({ transitioning: false }));
+	await continueLoop(h.pi, h.ctx);
+	h.sentMessages.length = 0;
+
+	for (let i = 0; i < 4; i++) {
+		h.simulateAgentEnd({ text: `Missing promise ${i + 1}` });
+	}
+	assert.equal(h.readState()?.running, true);
+	assert.equal(h.sentMessages.filter((message) => message === "continue").length, 3);
+
+	h.simulateAgentEnd({ stopReason: "error", text: "provider failed" });
+	assert.equal(h.readState()?.running, true);
+	assert.equal(h.readState()?.error_count, 1);
+
+	h.simulateAgentEnd({ text: "Recovered but still forgot the tag" });
+
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(h.readState()?.running, true);
+	assert.equal(h.readState()?.stop_reason, null);
+	assert.equal(h.sentMessages.at(-1), "continue");
+});
+
 test("agent_end with NEXT shows notice, advances iteration, and requests new session", async () => {
 	const h = createHarness();
 	h.writeState(

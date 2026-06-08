@@ -403,6 +403,43 @@ test("live pi RPC: recovers from a provider error via Pi's auto-retry", {
 	}
 });
 
+test("live pi RPC: provider error resets the missing-promise nudge chain", {
+	skip: !SHOULD_RUN,
+}, async () => {
+	const fakeProvider = resolve(
+		process.cwd(),
+		"tests",
+		"fixtures",
+		"fake-nudge-reset-provider.ts",
+	);
+	const h = createRpcHarness({
+		extraExtensions: [fakeProvider],
+		model: "ralph-fake/nudge-reset",
+		env: { RALPH_FAKE_API_KEY: "unused-but-present" },
+	});
+	try {
+		h.sendPrompt(
+			'/ralph-loop "Do one unit of work, then end with a promise tag." --max-iterations=1',
+		);
+		const state = await h.waitForFinalState(
+			/stop_reason:\s*"manual_stop"/,
+			120_000,
+		);
+
+		assert.match(state, /error_count:\s*1/);
+		assert.doesNotMatch(state, /stop_reason:\s*"error"/);
+		const session = h.stateField(state, "last_session_file");
+		const userMessages = h.userTexts(session);
+		assert.equal(
+			userMessages.filter((message) => message === "continue").length,
+			4,
+			"Ralph should send a fresh continue nudge after provider recovery",
+		);
+	} finally {
+		await h.stop();
+	}
+});
+
 // ── /ralph-resume same-session routing (reuse path) ─────────────────────
 // These exercise the three reuse-path conditions through the real runtime:
 // the seed prompt must be delivered exactly once per session, so resume must

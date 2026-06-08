@@ -54,11 +54,16 @@ type ReplacementSessionContext = Parameters<
 	NonNullable<NewSessionOptions["withSession"]>
 >[0];
 
-// Per-iteration promise-nudge counter (reset on each fresh iteration).
+// Per-chain promise-nudge counter. Provider errors and fresh iterations start a
+// new missing-promise chain; accepted promises leave the chain by moving state.
 let _promiseNudges = 0;
 
-function resetIterationCounters(): void {
+function resetPromiseNudgeChain(): void {
 	_promiseNudges = 0;
+}
+
+function resetIterationCounters(): void {
+	resetPromiseNudgeChain();
 	supersedeProviderWait();
 }
 
@@ -154,6 +159,7 @@ function handleProviderWait(
 	message: string,
 	finalMessage: string,
 ): void {
+	resetPromiseNudgeChain();
 	const errorCount = state.error_count + 1;
 	updateState(ctx.cwd, { error_count: errorCount });
 	showLoopNotice(ctx, message, "warning");
