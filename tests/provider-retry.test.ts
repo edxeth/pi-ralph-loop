@@ -11,6 +11,7 @@ import type {
 
 import {
 	handleLoopAgentEnd,
+	handleLoopTurnEnd,
 	PROVIDER_ERROR_MAX_WAIT_MS,
 } from "../src/loop-engine.ts";
 import { readState, writeState } from "../src/state.ts";
@@ -89,6 +90,10 @@ function createHarness() {
 				[{ role: "assistant", stopReason, content: [{ type: "text", text }] }],
 				ctx,
 			),
+		turnEnd: (text = "working") =>
+			handleLoopTurnEnd(pi, ctx, {
+				message: { role: "assistant", content: [{ type: "text", text }] },
+			}),
 	};
 }
 
@@ -155,6 +160,34 @@ test("a recovered turn that does not advance the loop still cancels the wait", (
 
 		assert.equal(h.readState()?.running, true);
 		assert.equal(h.readState()?.stop_reason, null);
+	} finally {
+		mock.timers.reset();
+	}
+});
+
+test("a long multi-turn recovery is not killed mid-work by the wait timer", () => {
+	mock.timers.enable({ apis: ["setTimeout"] });
+	try {
+		const h = createHarness();
+		h.writeState(makeState());
+
+		// Provider error mid-iteration arms the 180s wait.
+		h.agentEnd("error", "partial work before the WebSocket error");
+
+		// Pi recovers immediately and the agent keeps working: each tool round is a
+		// turn_end, NOT an agent_end (no agent_end arrives until the whole unit is
+		// done). This recovery runs longer than the wait window. Each turn must
+		// supersede the armed wait so it never fires while the agent is productive.
+		for (let elapsed = 0; elapsed < PROVIDER_ERROR_MAX_WAIT_MS * 2; elapsed += 20_000) {
+			h.turnEnd("still working on the iteration");
+			mock.timers.tick(20_000);
+			assert.equal(
+				h.readState()?.running,
+				true,
+				`loop killed mid-recovery at ~${elapsed}ms after the error`,
+			);
+			assert.equal(h.readState()?.stop_reason, null);
+		}
 	} finally {
 		mock.timers.reset();
 	}

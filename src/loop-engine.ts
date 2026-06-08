@@ -362,11 +362,19 @@ export function handleLoopTurnEnd(
 		toolResults?: unknown[];
 	},
 ): void {
-	if (areLimitRemindersDisabled()) return;
-	if (extractControlPromise(event?.message ?? null)) return;
-
 	const state = readState(ctx.cwd);
 	if (!state?.running || state.transitioning) return;
+
+	// A turn landing is proof Pi recovered after a provider-error turn, so any
+	// pending provider-error wait must be superseded here. Otherwise a recovery
+	// that runs longer than PROVIDER_ERROR_MAX_WAIT_MS lets the wait timer fire
+	// and finalize the loop as "error" while the agent is actively working.
+	// agent_end alone is too late: a long multi-turn recovery emits no agent_end
+	// until the whole unit finishes, which can be many minutes after the error.
+	supersedeProviderWait();
+
+	if (areLimitRemindersDisabled()) return;
+	if (extractControlPromise(event?.message ?? null)) return;
 
 	const usage = ctx.getContextUsage();
 	const usagePercent = usage?.percent;
