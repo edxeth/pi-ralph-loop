@@ -39,6 +39,8 @@ const STATE_SCHEMA = [
 	["stop_reason", "stringNull"],
 	["session_id", "string"],
 	["last_session_file", "stringNull"],
+	["owner_pid", "intNull"],
+	["owner_heartbeat_at", "stringNull"],
 	["error_count", "int"],
 	["transitioning", "bool"],
 	["cancel_requested", "bool"],

@@ -17,6 +17,8 @@ export interface RalphLoopState {
 	stop_reason: StopReason | null;
 	session_id: string;
 	last_session_file: string | null;
+	owner_pid: number | null;
+	owner_heartbeat_at: string | null;
 	error_count: number;
 	transitioning: boolean;
 	cancel_requested: boolean;

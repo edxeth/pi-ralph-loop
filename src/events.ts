@@ -3,6 +3,7 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { finalizeLoop } from "./loop/finalize.js";
+import { isLoopOwnerActive } from "./loop/ownership.js";
 import { handleLoopAgentEnd, handleLoopTurnEnd } from "./loop-engine.js";
 import { readState, updateState } from "./state.js";
 
@@ -88,11 +89,19 @@ function handleSessionStart(
 	if (!state?.running) return;
 
 	if (event.reason === "startup") {
-		// Pi booted and found a loop still marked running, so the previous
-		// process died without a clean shutdown event (hard crash, kill, OOM).
-		// If it died mid-handoff after a committed NEXT, mark it resumable so
-		// /ralph-resume can continue the saved iteration; otherwise treat the
-		// interrupted iteration as an error.
+		// Pi booted and found a loop still marked running. Another Pi instance may
+		// already own that loop in this workspace, so startup cleanup must first
+		// prove the owner is stale. Otherwise an observer session can mark the loop
+		// as error while the real iteration continues and later emits a valid NEXT.
+		if (isLoopOwnerActive(state, ctx.sessionManager.getSessionId())) {
+			restoreLoopStatus(ctx);
+			return;
+		}
+
+		// The saved owner is stale: the previous process died without a clean
+		// shutdown event (hard crash, kill, OOM). If it died mid-handoff after a
+		// committed NEXT, mark it resumable; otherwise treat the interrupted
+		// iteration as an error.
 		finalizeLoop(
 			ctx,
 			ctx.cwd,

@@ -22,6 +22,8 @@ function makeState(): RalphLoopState {
 		stop_reason: null,
 		session_id: "session-1",
 		last_session_file: "/sessions/session-1.jsonl",
+		owner_pid: null,
+		owner_heartbeat_at: null,
 		error_count: 1,
 		transitioning: false,
 		cancel_requested: false,
@@ -94,6 +96,8 @@ test("old state files parse with default bundle metadata", () => {
 	const state = readState(cwd);
 	assert.equal(state?.bundle_mode, false);
 	assert.ok(state?.loop_token);
+	assert.equal(state?.owner_pid, null);
+	assert.equal(state?.owner_heartbeat_at, null);
 	assert.equal(state?.bundle_snapshot_hash, null);
 	assert.equal(state?.items_snapshot_hash, null);
 	assert.equal(state?.progress_size, null);

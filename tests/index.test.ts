@@ -50,6 +50,8 @@ function makeState(overrides: Partial<RalphLoopState> = {}): RalphLoopState {
 		stop_reason: null,
 		session_id: "session-1",
 		last_session_file: "/sessions/session-1.jsonl",
+		owner_pid: null,
+		owner_heartbeat_at: null,
 		error_count: 0,
 		transitioning: false,
 		cancel_requested: false,
@@ -169,7 +171,11 @@ test("ralph-loop rejects invalid args", async () => {
 
 test("ralph-loop refuses to start while loop is already running", async () => {
 	const h = createHarness();
-	writeState(h.cwd, makeState(), "task");
+	writeState(
+		h.cwd,
+		makeState({ owner_pid: process.pid, owner_heartbeat_at: new Date().toISOString() }),
+		"task",
+	);
 
 	await h.commands.get("ralph-loop")?.handler('"task"', h.commandCtx);
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -27,6 +27,8 @@ function makeEventsState(
 		stop_reason: null,
 		session_id: "session-1",
 		last_session_file: "/sessions/session-1.jsonl",
+		owner_pid: null,
+		owner_heartbeat_at: null,
 		error_count: 0,
 		transitioning: false,
 		cancel_requested: false,
@@ -184,6 +186,33 @@ test("session_start on startup marks a crashed committed handoff resumable", () 
 	assert.equal(state?.running, false);
 	// A NEXT already advanced the iteration before the crash; keep it resumable.
 	assert.equal(state?.stop_reason, "interrupted");
+});
+
+test("session_start on startup preserves a live loop owned by another session", () => {
+	const h = createEventsHarness();
+	const ownerSessionFile = join(h.cwd, "owner-session.jsonl");
+	writeFileSync(ownerSessionFile, "{}\n");
+	writeState(
+		h.cwd,
+		makeEventsState({
+			session_id: "owner-session",
+			last_session_file: ownerSessionFile,
+			transitioning: false,
+		}),
+		"task",
+	);
+
+	h.handlers.get("session_start")?.({ reason: "startup" }, h.ctx);
+
+	const state = readState(h.cwd);
+	assert.equal(state?.running, true);
+	assert.equal(state?.stop_reason, null);
+	assert.equal(state?.transitioning, false);
+	assert.ok(
+		h.statusUpdates.some(
+			(update) => update.key === "ralph-loop" && update.value === "Ralph 2/5",
+		),
+	);
 });
 
 test("session_start on startup errors a crashed mid-iteration loop", () => {

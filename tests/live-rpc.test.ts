@@ -22,6 +22,7 @@ type RpcHarness = {
 	workdir: string;
 	sessionDir: string;
 	sendPrompt: (message: string) => void;
+	waitForStartup: (timeoutMs?: number) => Promise<void>;
 	waitForState: (matcher: RegExp, timeoutMs?: number) => Promise<string>;
 	waitForFinalState: (matcher: RegExp, timeoutMs?: number) => Promise<string>;
 	readStateText: () => string;
@@ -69,12 +70,13 @@ function createRpcHarness(
 		extraExtensions?: string[];
 		model?: string;
 		env?: Record<string, string>;
+		workdir?: string;
 	} = {},
 ): RpcHarness {
 	const root = process.cwd();
 	const extPath = resolve(root, "src", "index.ts");
 	const base = mkdtempSync(join(tmpdir(), "ralph-live-"));
-	const workdir = join(base, "work");
+	const workdir = options.workdir ?? join(base, "work");
 	const sessionDir = join(base, "sessions");
 	const statePath = join(workdir, ".ralph", "loop.md");
 	const agentDir = createTempAgentConfig(base, root);
@@ -110,8 +112,15 @@ function createRpcHarness(
 		},
 	);
 
+	const stderr: string[] = [];
+	child.stderr.setEncoding("utf8");
+	child.stderr.on("data", (chunk) => stderr.push(String(chunk)));
 	const rl = readline.createInterface({ input: child.stdout });
 	rl.on("line", () => {});
+	let exited: { code: number | null; signal: NodeJS.Signals | null } | null = null;
+	child.on("exit", (code, signal) => {
+		exited = { code, signal };
+	});
 
 	const readStateText = () =>
 		existsSync(statePath) ? readFileSync(statePath, "utf8") : "";
@@ -157,6 +166,14 @@ function createRpcHarness(
 		return out;
 	};
 
+	function getExitError(): Error | null {
+		if (!exited) return null;
+		const tail = stderr.join("").trim().split("\n").slice(-20).join("\n");
+		return new Error(
+			`Pi RPC process exited with code ${exited.code} signal ${exited.signal}${tail ? `:\n${tail}` : ""}`,
+		);
+	}
+
 	return {
 		workdir,
 		sessionDir,
@@ -164,6 +181,17 @@ function createRpcHarness(
 		stateField,
 		listSessions,
 		userTexts,
+		async waitForStartup(timeoutMs = 30_000) {
+			const deadline = Date.now() + timeoutMs;
+			const stableUntil = Date.now() + 2_000;
+			while (Date.now() < deadline) {
+				const exitError = getExitError();
+				if (exitError) throw exitError;
+				if (Date.now() >= stableUntil) return;
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			}
+			throw new Error("Timed out waiting for Pi RPC startup");
+		},
 		editState(replacer: (text: string) => string) {
 			writeFileSync(statePath, replacer(readFileSync(statePath, "utf8")), "utf8");
 		},
@@ -173,6 +201,8 @@ function createRpcHarness(
 		async waitForState(matcher: RegExp, timeoutMs = 240_000) {
 			const deadline = Date.now() + timeoutMs;
 			while (Date.now() < deadline) {
+				const exitError = getExitError();
+				if (exitError) throw exitError;
 				if (existsSync(statePath)) {
 					const text = readFileSync(statePath, "utf8");
 					if (matcher.test(text)) return text;
@@ -190,6 +220,8 @@ function createRpcHarness(
 		async waitForUserTextCount(file: string, min: number, timeoutMs = 90_000) {
 			const deadline = Date.now() + timeoutMs;
 			while (Date.now() < deadline) {
+				const exitError = getExitError();
+				if (exitError) throw exitError;
 				const texts = userTexts(file);
 				if (texts.length >= min) return texts;
 				await new Promise((resolve) => setTimeout(resolve, 200));
@@ -199,10 +231,32 @@ function createRpcHarness(
 			);
 		},
 		async stop() {
+			if (exited) return;
 			child.kill("SIGTERM");
-			await new Promise((resolve) => child.on("exit", resolve));
+			await Promise.race([
+				new Promise((resolve) => child.on("exit", resolve)),
+				new Promise((resolve) => setTimeout(resolve, 5_000)),
+			]);
+			if (!exited) child.kill("SIGKILL");
 		},
 	};
+}
+
+function scriptedProviderPath(): string {
+	return resolve(
+		process.cwd(),
+		"tests",
+		"fixtures",
+		"fake-scripted-provider.ts",
+	);
+}
+
+function createScriptedHarness(): RpcHarness {
+	return createRpcHarness({
+		extraExtensions: [scriptedProviderPath()],
+		model: "ralph-fake/scripted",
+		env: { RALPH_FAKE_API_KEY: "unused-but-present" },
+	});
 }
 
 function writeBundle(
@@ -286,7 +340,7 @@ function writeNoisyGateBundle(workdir: string): void {
 test("live pi RPC: NEXT advances and COMPLETE stops", {
 	skip: !SHOULD_RUN,
 }, async () => {
-	const h = createRpcHarness();
+	const h = createScriptedHarness();
 	try {
 		h.sendPrompt(
 			'/ralph-loop "Read .ralph/loop.md to get the current iteration number from frontmatter. If iteration is less than 3, reply with exactly two lines: Iteration <n> and <promise>NEXT</promise>. Otherwise reply with exactly two lines: Iteration <n> and <promise>COMPLETE</promise>. Do not use code fences." --max-iterations=4',
@@ -301,7 +355,7 @@ test("live pi RPC: NEXT advances and COMPLETE stops", {
 test("live pi RPC: NEXT on last iteration stops at max_iterations", {
 	skip: !SHOULD_RUN,
 }, async () => {
-	const h = createRpcHarness();
+	const h = createScriptedHarness();
 	try {
 		h.sendPrompt(
 			'/ralph-loop "Reply with exactly one line: <promise>NEXT</promise>" --max-iterations=2',
@@ -313,10 +367,61 @@ test("live pi RPC: NEXT on last iteration stops at max_iterations", {
 	}
 });
 
+test("live pi RPC: observer startup preserves an active loop owner", {
+	skip: !SHOULD_RUN,
+}, async () => {
+	const fakeProvider = resolve(
+		process.cwd(),
+		"tests",
+		"fixtures",
+		"fake-slow-complete-provider.ts",
+	);
+	const owner = createRpcHarness({
+		extraExtensions: [fakeProvider],
+		model: "ralph-fake/slow-complete",
+		env: { RALPH_FAKE_API_KEY: "unused-but-present" },
+	});
+	let observer: RpcHarness | null = null;
+	try {
+		owner.sendPrompt(
+			'/ralph-loop "Stay active briefly, then complete." --max-iterations=1',
+		);
+		const active = await owner.waitForState(
+			/running:\s*true[\s\S]*iteration:\s*1[\s\S]*transitioning:\s*false/,
+			60_000,
+		);
+		assert.match(active, /owner_pid:\s*\d+/);
+		assert.match(active, /owner_heartbeat_at:\s*"[^"]+"/);
+
+		observer = createRpcHarness({
+			workdir: owner.workdir,
+			extraExtensions: [fakeProvider],
+			model: "ralph-fake/slow-complete",
+			env: { RALPH_FAKE_API_KEY: "unused-but-present" },
+		});
+		await observer.waitForStartup();
+		await new Promise((resolve) => setTimeout(resolve, 2_000));
+
+		const afterObserverStartup = owner.readStateText();
+		assert.match(afterObserverStartup, /running:\s*true/);
+		assert.doesNotMatch(afterObserverStartup, /stop_reason:\s*"error"/);
+
+		const finalState = await owner.waitForFinalState(
+			/stop_reason:\s*"complete"/,
+			120_000,
+		);
+		assert.match(finalState, /owner_pid:\s*null/);
+		assert.match(finalState, /owner_heartbeat_at:\s*null/);
+	} finally {
+		if (observer) await observer.stop();
+		await owner.stop();
+	}
+});
+
 test("live pi RPC: accepted bundle NEXT creates a fresh session", {
 	skip: !SHOULD_RUN,
 }, async () => {
-	const h = createRpcHarness();
+	const h = createScriptedHarness();
 	try {
 		writeBundle(h.workdir);
 		h.sendPrompt('/ralph-loop "@.ralph/prompt.md" --max-iterations=3');
@@ -346,23 +451,33 @@ test("live pi RPC: accepted bundle NEXT creates a fresh session", {
 test("live pi RPC: rejected bundle NEXT stays in the same session", {
 	skip: !SHOULD_RUN,
 }, async () => {
-	const h = createRpcHarness();
+	const h = createScriptedHarness();
 	try {
 		writeBundle(h.workdir);
+		const sessionsBefore = h.listSessions().length;
 		h.sendPrompt('/ralph-loop "@.ralph/prompt.md" --max-iterations=2');
-		await h.waitForState(
+		const started = await h.waitForState(
 			/running:\s*true[\s\S]*iteration:\s*1[\s\S]*transitioning:\s*false/,
 		);
+		const session = h.stateField(started, "last_session_file");
+		assert.ok(session);
 		writeFileSync(
 			join(h.workdir, ".ralph", "progress.md"),
 			"# Live progress\n- Test harness appended progress without item completion.\n",
 		);
-		await new Promise((resolve) => setTimeout(resolve, 15_000));
-		const state = await h.waitForState(
-			/running:\s*true[\s\S]*iteration:\s*1[\s\S]*transitioning:\s*false/,
-			1_000,
+
+		const state = await h.waitForFinalState(
+			/stop_reason:\s*"manual_stop"/,
+			60_000,
 		);
-		assert.doesNotMatch(state, /iteration:\s*2/);
+		assert.match(state, /iteration:\s*1/);
+		assert.match(state, /bundle_rejection_count:\s*1/);
+		assert.equal(h.stateField(state, "last_session_file"), session);
+		assert.equal(
+			h.listSessions().length,
+			sessionsBefore + 1,
+			"rejected NEXT must not open a fresh iteration session",
+		);
 	} finally {
 		await h.stop();
 	}
@@ -448,7 +563,7 @@ test("live pi RPC: provider error resets the missing-promise nudge chain", {
 test("live pi RPC: resume re-finalizes an already-emitted COMPLETE without re-seeding", {
 	skip: !SHOULD_RUN,
 }, async () => {
-	const h = createRpcHarness();
+	const h = createScriptedHarness();
 	try {
 		h.sendPrompt(
 			'/ralph-loop "Read .ralph/loop.md frontmatter for iteration n. Reply with EXACTLY two lines: first \\"Iteration <n>\\", second \\"<promise>COMPLETE</promise>\\". No code fences." --max-iterations=3',
@@ -473,7 +588,7 @@ test("live pi RPC: resume re-finalizes an already-emitted COMPLETE without re-se
 test("live pi RPC: resume advances on an already-emitted NEXT and opens a fresh session", {
 	skip: !SHOULD_RUN,
 }, async () => {
-	const h = createRpcHarness();
+	const h = createScriptedHarness();
 	try {
 		h.sendPrompt(
 			'/ralph-loop "Reply with EXACTLY two lines and nothing else: first \\"Iteration done\\", second \\"<promise>NEXT</promise>\\". No code fences." --max-iterations=1',
@@ -510,7 +625,7 @@ test("live pi RPC: resume advances on an already-emitted NEXT and opens a fresh 
 test("live pi RPC: resume nudges 'continue' when no promise was emitted yet", {
 	skip: !SHOULD_RUN,
 }, async () => {
-	const h = createRpcHarness();
+	const h = createScriptedHarness();
 	try {
 		// A prompt that never emits a promise gets nudged with "continue". We let
 		// exactly one nudge land (proving a no-promise turn happened), then stop the

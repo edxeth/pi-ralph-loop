@@ -18,6 +18,11 @@ import {
 	selectLimitReminder,
 } from "./loop/limit-reminders.js";
 import {
+	claimLoopOwnership,
+	getLoopOwnerFields,
+	startLoopHeartbeat,
+} from "./loop/ownership.js";
+import {
 	armProviderWait,
 	isProviderWaitCurrent,
 	supersedeProviderWait,
@@ -227,7 +232,9 @@ function markIterationStarted(
 		transitioning: false,
 		session_id: ctx.sessionManager.getSessionId(),
 		last_session_file: ctx.sessionManager.getSessionFile() ?? null,
+		...getLoopOwnerFields(),
 	});
+	startLoopHeartbeat(ctx.cwd, state.loop_token);
 	if (state.bundle_mode) {
 		snapshotBundleIteration(ctx.cwd, state);
 	}
@@ -537,6 +544,7 @@ export async function runLoop(
 		stop_reason: null,
 		session_id: "",
 		last_session_file: null,
+		...getLoopOwnerFields(),
 		error_count: initialErrorCount,
 		transitioning: true,
 		cancel_requested: false,
@@ -561,6 +569,7 @@ export async function runLoop(
 	}
 
 	setCommandCtx(ctx);
+	claimLoopOwnership(ctx.cwd);
 	resetIterationCounters();
 
 	showLoopNotice(ctx, `Ralph loop started (max ${maxIterations} iterations)`, "info", {
@@ -621,7 +630,9 @@ export async function resumeCurrentSession(
 		stop_reason: null,
 		session_id: ctx.sessionManager.getSessionId(),
 		last_session_file: ctx.sessionManager.getSessionFile() ?? null,
+		...getLoopOwnerFields(),
 	});
+	claimLoopOwnership(ctx.cwd);
 	const state = readState(ctx.cwd);
 	if (!state) return;
 

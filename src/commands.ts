@@ -6,6 +6,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { loadRalphBundle } from "./bundle/index.js";
+import { finalizeLoop } from "./loop/finalize.js";
+import { isLoopOwnerActive } from "./loop/ownership.js";
 import { resumeCurrentSession, runLoop } from "./loop-engine.js";
 import { parseArgs } from "./parser.js";
 import { getTaskBody, readState, updateState } from "./state.js";
@@ -34,7 +36,20 @@ function notifyLoopAlreadyRunning(ctx: ExtensionCommandContext): void {
 }
 
 function ensureLoopNotRunning(ctx: ExtensionCommandContext): boolean {
-	if (!isLoopRunning(ctx.cwd)) return true;
+	const state = readState(ctx.cwd);
+	if (!state?.running) return true;
+
+	if (!isLoopOwnerActive(state, ctx.sessionManager.getSessionId())) {
+		finalizeLoop(
+			ctx,
+			ctx.cwd,
+			state.transitioning ? "interrupted" : "error",
+			state.error_count,
+		);
+		ctx.ui.notify("Recovered stale Ralph loop owner before continuing", "warning");
+		return true;
+	}
+
 	notifyLoopAlreadyRunning(ctx);
 	return false;
 }

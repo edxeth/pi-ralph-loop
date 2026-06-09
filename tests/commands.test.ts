@@ -23,6 +23,14 @@ async function waitForScheduledWork(): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, 10));
 }
 
+function staleOwnerHeartbeat(): string {
+	return new Date(Date.now() - 61_000).toISOString();
+}
+
+function freshOwnerHeartbeat(): string {
+	return new Date().toISOString();
+}
+
 function makeCommandsState(
 	overrides: Partial<RalphLoopState> = {},
 ): RalphLoopState {
@@ -35,6 +43,8 @@ function makeCommandsState(
 		stop_reason: null,
 		session_id: "session-1",
 		last_session_file: "/sessions/session-1.jsonl",
+		owner_pid: null,
+		owner_heartbeat_at: null,
 		error_count: 0,
 		transitioning: false,
 		cancel_requested: false,
@@ -281,7 +291,11 @@ test("ralph-loop starts in a fresh session when current session has history", as
 
 test("ralph-loop rejects start when active loop state exists", async () => {
 	const h = createCommandsHarness();
-	writeState(h.cwd, makeCommandsState(), "task");
+	writeState(
+		h.cwd,
+		makeCommandsState({ owner_pid: process.pid, owner_heartbeat_at: freshOwnerHeartbeat() }),
+		"task",
+	);
 
 	await h.commands.get("ralph-loop")?.handler("new task", h.ctx);
 
@@ -290,6 +304,77 @@ test("ralph-loop rejects start when active loop state exists", async () => {
 		message: "A Ralph loop is already running",
 		type: "error",
 	});
+});
+
+test("ralph-resume recovers a stale running owner before resuming", async () => {
+	const h = createCommandsHarness();
+	writeState(
+		h.cwd,
+		makeCommandsState({
+			running: true,
+			iteration: 2,
+			max_iterations: 5,
+			session_id: "stale-owner-session",
+			owner_pid: 123_456_789,
+			owner_heartbeat_at: staleOwnerHeartbeat(),
+		}),
+		"resume stale task",
+	);
+
+	await h.commands.get("ralph-resume")?.handler("", h.ctx);
+	await waitForScheduledWork();
+
+	assert.equal(h.notifications.at(0)?.message, "Recovered stale Ralph loop owner before continuing");
+	assert.equal(h.getNewSessionCount(), 1);
+	const state = readState(h.cwd);
+	assert.equal(state?.running, true);
+	assert.equal(state?.iteration, 2);
+	assert.equal(state?.stop_reason, null);
+});
+
+test("ralph-resume refuses a fresh running owner", async () => {
+	const h = createCommandsHarness();
+	writeState(
+		h.cwd,
+		makeCommandsState({
+			running: true,
+			owner_pid: 123_456_789,
+			owner_heartbeat_at: freshOwnerHeartbeat(),
+		}),
+		"active task",
+	);
+
+	await h.commands.get("ralph-resume")?.handler("", h.ctx);
+
+	assert.deepEqual(h.notifications.at(-1), {
+		message: "A Ralph loop is already running",
+		type: "error",
+	});
+	assert.equal(h.getNewSessionCount(), 0);
+	assert.equal(readState(h.cwd)?.running, true);
+});
+
+test("ralph-restart recovers a stale running owner before restarting", async () => {
+	const h = createCommandsHarness();
+	writeState(
+		h.cwd,
+		makeCommandsState({
+			running: true,
+			iteration: 3,
+			max_iterations: 5,
+			session_id: "stale-owner-session",
+			owner_pid: 123_456_789,
+			owner_heartbeat_at: staleOwnerHeartbeat(),
+		}),
+		"restart stale task",
+	);
+
+	await h.commands.get("ralph-restart")?.handler("", h.ctx);
+	await waitForScheduledWork();
+
+	assert.equal(h.notifications.at(0)?.message, "Recovered stale Ralph loop owner before continuing");
+	assert.match(h.notifications.at(1)?.message ?? "", /Restarting Ralph loop from iteration 1\/5/);
+	assert.equal(readState(h.cwd)?.iteration, 1);
 });
 
 test("ralph-resume preserves saved bundle mode", async () => {

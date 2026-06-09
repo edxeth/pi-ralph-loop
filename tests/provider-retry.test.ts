@@ -27,6 +27,8 @@ function makeState(overrides: Partial<RalphLoopState> = {}): RalphLoopState {
 		stop_reason: null,
 		session_id: "session-1",
 		last_session_file: "/sessions/session-1.jsonl",
+		owner_pid: null,
+		owner_heartbeat_at: null,
 		error_count: 0,
 		transitioning: false,
 		cancel_requested: false,
