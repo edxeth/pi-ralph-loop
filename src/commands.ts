@@ -91,6 +91,14 @@ function formatResumeNotification(
 		: `Resuming Ralph loop from iteration ${state.iteration}/${state.max_iterations} in a fresh session`;
 }
 
+function getSavedModelState(state: SavedLoop["state"]) {
+	return {
+		model_provider: state.model_provider,
+		model_id: state.model_id,
+		thinking_level: state.thinking_level,
+	};
+}
+
 function formatStatusMessage(state: SavedLoop["state"]): string {
 	const elapsed = state.started_at
 		? Math.round(
@@ -199,6 +207,7 @@ async function handleResumeCommand(
 		initialErrorCount: state.error_count,
 		bundleMode: state.bundle_mode,
 		forceFreshSession: true,
+		initialModelState: getSavedModelState(state),
 	});
 }
 
@@ -237,6 +246,7 @@ async function handleRestartCommand(
 		initialErrorCount: 0,
 		bundleMode: state.bundle_mode,
 		forceFreshSession: true,
+		initialModelState: getSavedModelState(state),
 	});
 }
 

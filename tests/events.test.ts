@@ -35,6 +35,9 @@ function makeEventsState(
 		stop_requested: false,
 		bundle_mode: false,
 		loop_token: "token-1",
+		model_provider: null,
+		model_id: null,
+		thinking_level: null,
 		bundle_snapshot_hash: null,
 		items_snapshot_hash: null,
 		progress_size: null,
@@ -149,6 +152,52 @@ test("session_shutdown preserves Ralph-managed new-session transitions", () => {
 	assert.equal(state?.running, true);
 	assert.equal(state?.transitioning, true);
 	assert.equal(state?.stop_reason, null);
+});
+
+test("model and thinking selection update the active owner loop state", () => {
+	const h = createEventsHarness();
+	writeState(h.cwd, makeEventsState({ session_id: "session-2" }), "task");
+
+	h.handlers.get("model_select")?.(
+		{ model: { provider: "anthropic", id: "claude-sonnet" } },
+		h.ctx,
+	);
+	h.handlers.get("thinking_level_select")?.({ level: "high" }, h.ctx);
+
+	const state = readState(h.cwd);
+	assert.equal(state?.model_provider, "anthropic");
+	assert.equal(state?.model_id, "claude-sonnet");
+	assert.equal(state?.thinking_level, "high");
+});
+
+test("model selection ignores foreign sessions and handoff transitions", () => {
+	const h = createEventsHarness();
+	writeState(
+		h.cwd,
+		makeEventsState({
+			session_id: "session-1",
+			model_provider: "openai",
+			model_id: "gpt-5",
+		}),
+		"task",
+	);
+
+	h.handlers.get("model_select")?.(
+		{ model: { provider: "anthropic", id: "claude-sonnet" } },
+		h.ctx,
+	);
+	assert.equal(readState(h.cwd)?.model_provider, "openai");
+
+	writeState(
+		h.cwd,
+		makeEventsState({ session_id: "session-2", transitioning: true }),
+		"task",
+	);
+	h.handlers.get("model_select")?.(
+		{ model: { provider: "anthropic", id: "claude-sonnet" } },
+		h.ctx,
+	);
+	assert.equal(readState(h.cwd)?.model_provider, null);
 });
 
 test("session_start restores status for Ralph-created new sessions", () => {

@@ -209,6 +209,7 @@ Ralph writes `.ralph/loop.md`. The YAML frontmatter is runtime state, not a user
 | `cancel_requested` / `stop_requested` | User stop flags. |
 | `bundle_mode` | Whether `.ralph/prompt.md` bundle checks apply. |
 | `loop_token` | Run identity used to avoid stale transitions. |
+| `model_provider`, `model_id`, `thinking_level` | Model and thinking level Ralph replays for the next fresh iteration. |
 | `bundle_*`, `items_*`, `progress_*`, `source_doc_hashes`, `git_head` | Bundle snapshots used to validate promises. |
 | `bundle_rejection_count` | Rejected bundle promises in the current iteration. |
 | `limit_reminders` | Context-limit reminder thresholds already sent in the current iteration. |

@@ -11,6 +11,7 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
+import { setLoopApi } from "../src/loop/api-context.ts";
 import {
 	continueLoop,
 	handleLoopAgentEnd,
@@ -56,6 +57,11 @@ type Harness = {
 		placement?: string;
 	}>;
 	newSessionCalls: number;
+	setModelCalls: string[];
+	setThinkingLevelCalls: string[];
+	registerModel: (model: { provider: string; id: string }) => void;
+	setCurrentModel: (model: { provider: string; id: string } | undefined) => void;
+	setCurrentThinkingLevel: (level: string) => void;
 	setSession: (id: string, file: string) => void;
 	setIdle: (value: boolean) => void;
 	setContextPercent: (value: number | null | undefined) => void;
@@ -85,6 +91,9 @@ function makeBaseState(
 		stop_requested: false,
 		bundle_mode: false,
 		loop_token: "token-1",
+		model_provider: null,
+		model_id: null,
+		thinking_level: null,
 		bundle_snapshot_hash: null,
 		items_snapshot_hash: null,
 		progress_size: null,
@@ -170,6 +179,11 @@ function createHarness(): Harness {
 	let idle = true;
 	let idleWaits = 0;
 	let contextPercent: number | null | undefined;
+	let currentModel: { provider: string; id: string } | undefined;
+	let currentThinkingLevel = "medium";
+	const models = new Map<string, { provider: string; id: string }>();
+	const setModelCalls: string[] = [];
+	const setThinkingLevelCalls: string[] = [];
 
 	const ui = {
 		theme: { fg: (_token: string, text: string) => text },
@@ -189,34 +203,71 @@ function createHarness(): Harness {
 		setWorkingVisible(_visible: boolean) {},
 	};
 
-	const pi = {
-		sendUserMessage(
-			message: string,
-			options?: { deliverAs?: string; triggerTurn?: boolean },
-		) {
-			sentMessages.push(message);
-			sentMessageOptions.push(options);
-		},
-		sendMessage(
-			message: {
-				customType: string;
-				content?: unknown;
-				display?: boolean;
+	let activeApiVersion = 1;
+	function makePi(version: number): ExtensionAPI {
+		function assertActiveApi() {
+			if (version !== activeApiVersion) {
+				throw new Error(`stale pi api v${version}`);
+			}
+		}
+
+		return {
+			sendUserMessage(
+				message: string,
+				options?: { deliverAs?: string; triggerTurn?: boolean },
+			) {
+				assertActiveApi();
+				sentMessages.push(message);
+				sentMessageOptions.push(options);
 			},
-			options?: { deliverAs?: string; triggerTurn?: boolean },
-		) {
-			customMessages.push({ ...message, options });
-		},
-		setSessionName(name: string) {
-			sessionNames.push(name);
-		},
-	} as unknown as ExtensionAPI;
+			sendMessage(
+				message: {
+					customType: string;
+					content?: unknown;
+					display?: boolean;
+				},
+				options?: { deliverAs?: string; triggerTurn?: boolean },
+			) {
+				assertActiveApi();
+				customMessages.push({ ...message, options });
+			},
+			setSessionName(name: string) {
+				assertActiveApi();
+				sessionNames.push(name);
+			},
+			async setModel(model: { provider: string; id: string }) {
+				assertActiveApi();
+				setModelCalls.push(`${model.provider}/${model.id}`);
+				currentModel = model;
+				return true;
+			},
+			getThinkingLevel() {
+				assertActiveApi();
+				return currentThinkingLevel;
+			},
+			setThinkingLevel(level: string) {
+				assertActiveApi();
+				setThinkingLevelCalls.push(level);
+				currentThinkingLevel = level;
+			},
+		} as unknown as ExtensionAPI;
+	}
+
+	const pi = makePi(activeApiVersion);
+	let currentPi = pi;
+	setLoopApi(currentPi);
 
 	let activeContextVersion = 1;
 	function makeCtx(version: number): ExtensionCommandContext {
 		return {
 			cwd,
 			ui,
+			get model() {
+				return currentModel;
+			},
+			modelRegistry: {
+				find: (provider: string, id: string) => models.get(`${provider}/${id}`),
+			},
 			sessionManager: {
 				getBranch: () => branch,
 				getSessionId: () => sessionId,
@@ -250,6 +301,9 @@ function createHarness(): Harness {
 				}
 				newSessionCalls++;
 				activeContextVersion++;
+				activeApiVersion++;
+				currentPi = makePi(activeApiVersion);
+				setLoopApi(currentPi);
 				await options?.setup?.({
 					appendSessionInfo: (name: string) => sessionNames.push(name),
 				});
@@ -272,12 +326,14 @@ function createHarness(): Harness {
 				content: [{ type: "text" as const, text: response.text }],
 			},
 		];
-		handleLoopAgentEnd(pi, messages, eventCtx);
+		handleLoopAgentEnd(currentPi, messages, eventCtx);
 	}
 
 	return {
 		cwd,
-		pi,
+		get pi() {
+			return currentPi;
+		},
 		ctx,
 		sentMessages,
 		sentMessageOptions,
@@ -289,6 +345,18 @@ function createHarness(): Harness {
 		widgets,
 		get newSessionCalls() {
 			return newSessionCalls;
+		},
+		setModelCalls,
+		setThinkingLevelCalls,
+		registerModel(model: { provider: string; id: string }) {
+			models.set(`${model.provider}/${model.id}`, model);
+		},
+		setCurrentModel(model: { provider: string; id: string } | undefined) {
+			currentModel = model;
+			if (model) models.set(`${model.provider}/${model.id}`, model);
+		},
+		setCurrentThinkingLevel(level: string) {
+			currentThinkingLevel = level;
 		},
 		setSession(id: string, file: string) {
 			sessionId = id;
@@ -323,6 +391,44 @@ test("runLoop uses the current session when it has no turns", async () => {
 	assert.equal(h.widgets.at(-1)?.key, "ralph-loop-notice");
 	assert.equal(h.widgets.at(-1)?.placement, "aboveEditor");
 	assert.equal(typeof h.widgets.at(-1)?.content, "function");
+});
+
+test("runLoop snapshots the active model and thinking level", async () => {
+	const h = createHarness();
+	h.setCurrentModel({ provider: "anthropic", id: "claude-sonnet" });
+	h.setCurrentThinkingLevel("high");
+
+	await runLoop(h.pi, h.ctx, "task", 3);
+
+	const state = h.readState();
+	assert.equal(state?.model_provider, "anthropic");
+	assert.equal(state?.model_id, "claude-sonnet");
+	assert.equal(state?.thinking_level, "high");
+});
+
+test("accepted NEXT replays saved model and thinking before the fresh iteration prompt", async () => {
+	const h = createHarness();
+	h.registerModel({ provider: "anthropic", id: "claude-sonnet" });
+	await runLoop(h.pi, h.ctx, "task", 3);
+	h.sentMessages.length = 0;
+	h.setCurrentThinkingLevel("high");
+	h.writeState(
+		makeBaseState({
+			iteration: 1,
+			max_iterations: 3,
+			transitioning: false,
+			model_provider: "anthropic",
+			model_id: "claude-sonnet",
+			thinking_level: "high",
+		}),
+	);
+
+	h.simulateAgentEnd({ text: "done\n<promise>NEXT</promise>" });
+	await new Promise((r) => setTimeout(r, 600));
+
+	assert.deepEqual(h.setModelCalls, ["anthropic/claude-sonnet"]);
+	assert.deepEqual(h.setThinkingLevelCalls, ["high"]);
+	assert.equal(h.sentMessages.at(-1), "task");
 });
 
 test("bundle NEXT accepts exactly one completed item", async () => {

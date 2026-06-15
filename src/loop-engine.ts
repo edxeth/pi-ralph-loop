@@ -17,6 +17,12 @@ import {
 	areLimitRemindersDisabled,
 	selectLimitReminder,
 } from "./loop/limit-reminders.js";
+import { getLoopApi } from "./loop/api-context.js";
+import {
+	readCurrentLoopModelState,
+	restoreLoopModelState,
+	updateLoopModelStateFromContext,
+} from "./loop/model-state.js";
 import {
 	claimLoopOwnership,
 	getLoopOwnerFields,
@@ -273,32 +279,59 @@ async function openFreshIterationSession(
 	ctx: ExtensionCommandContext,
 	errorCount: number,
 ): Promise<void> {
-	const state = readState(ctx.cwd);
-	const task = getTaskBody(ctx.cwd);
+	const cwd = ctx.cwd;
+	const state = readState(cwd);
+	const task = getTaskBody(cwd);
 	if (!state?.running) return;
 	if (!task) {
-		finalizeLoop(ctx, ctx.cwd, "error", errorCount);
+		finalizeLoop(ctx, cwd, "error", errorCount);
 		return;
 	}
 
+	let replacementCtx: ReplacementSessionContext | null = null;
 	try {
 		const result = await ctx.newSession({
 			setup: async (sessionManager) => {
 				sessionManager.appendSessionInfo(formatIterationSessionName(state));
 			},
 			withSession: async (nextCtx) => {
+				replacementCtx = nextCtx;
 				setCommandCtx(nextCtx);
 				const latest = readState(nextCtx.cwd);
 				if (!latest?.running) return;
+
+				const hasSavedModelState = Boolean(
+					latest.model_provider || latest.model_id || latest.thinking_level,
+				);
+				const replacementPi = hasSavedModelState ? getLoopApi() : null;
+				if (hasSavedModelState && !replacementPi) {
+					showLoopNotice(
+						nextCtx,
+						"Ralph loop error: lost extension API for session transition",
+						"error",
+					);
+					finalizeLoop(nextCtx, nextCtx.cwd, "error", latest.error_count);
+					return;
+				}
+
+				const restoreError = replacementPi
+					? await restoreLoopModelState(replacementPi, nextCtx, latest)
+					: null;
+				if (restoreError) {
+					showLoopNotice(nextCtx, restoreError, "error");
+					finalizeLoop(nextCtx, nextCtx.cwd, "error", latest.error_count);
+					return;
+				}
+
 				markIterationStarted(nextCtx, latest);
 				scheduleReplacementPrompt(nextCtx, task, latest.error_count);
 			},
 		});
 		if (result.cancelled) {
-			finalizeLoop(ctx, ctx.cwd, "error", errorCount);
+			finalizeLoop(ctx, cwd, "error", errorCount);
 		}
 	} catch {
-		finalizeLoop(ctx, ctx.cwd, "error", errorCount);
+		finalizeLoop(replacementCtx ?? ctx, cwd, "error", errorCount);
 	}
 }
 
@@ -501,6 +534,7 @@ export function handleLoopAgentEnd(
 		return;
 	}
 
+	updateLoopModelStateFromContext(pi, ctx);
 	const controlPromise = extractControlPromise(assistant);
 	if (controlPromise === "COMPLETE") {
 		handleCompletePromise(pi, ctx, state);
@@ -534,6 +568,8 @@ export async function runLoop(
 	const bundleMode = options.bundleMode === true;
 	const useCurrentSession =
 		options.forceFreshSession !== true && !readSessionTurns(ctx).hasTurns;
+	const initialModelState =
+		options.initialModelState ?? readCurrentLoopModelState(pi, ctx);
 
 	const initialState: RalphLoopState = {
 		running: true,
@@ -551,6 +587,7 @@ export async function runLoop(
 		stop_requested: false,
 		bundle_mode: bundleMode,
 		loop_token: randomUUID(),
+		...initialModelState,
 		bundle_snapshot_hash: null,
 		items_snapshot_hash: null,
 		progress_size: null,

@@ -25,6 +25,9 @@ export interface RalphLoopState {
 	stop_requested: boolean;
 	bundle_mode: boolean;
 	loop_token: string;
+	model_provider: string | null;
+	model_id: string | null;
+	thinking_level: string | null;
 	bundle_snapshot_hash: string | null;
 	items_snapshot_hash: string | null;
 	progress_size: number | null;
@@ -50,4 +53,8 @@ export interface RunLoopOptions {
 	initialErrorCount?: number;
 	bundleMode?: boolean;
 	forceFreshSession?: boolean;
+	initialModelState?: Pick<
+		RalphLoopState,
+		"model_provider" | "model_id" | "thinking_level"
+	>;
 }

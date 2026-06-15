@@ -5,6 +5,11 @@ import type {
 import { finalizeLoop } from "./loop/finalize.js";
 import { isLoopOwnerActive } from "./loop/ownership.js";
 import { handleLoopAgentEnd, handleLoopTurnEnd } from "./loop-engine.js";
+import {
+	updateLoopModelStateFromContext,
+	updateLoopSelectedModel,
+	updateLoopThinkingLevel,
+} from "./loop/model-state.js";
 import { readState, updateState } from "./state.js";
 
 function isLoopRunning(cwd: string): boolean {
@@ -126,6 +131,15 @@ export function registerEventHandlers(pi: ExtensionAPI): void {
 		handleSessionShutdown(event, ctx),
 	);
 	pi.on("session_start", handleSessionStart);
+	pi.on("model_select", (event, ctx) =>
+		updateLoopSelectedModel(ctx, event.model),
+	);
+	pi.on("thinking_level_select", (event, ctx) =>
+		updateLoopThinkingLevel(ctx, event.level),
+	);
+	pi.on("before_agent_start", (_event, ctx) =>
+		updateLoopModelStateFromContext(pi, ctx),
+	);
 	pi.on("turn_end", (event, ctx) => handleLoopTurnEnd(pi, ctx, event));
 	pi.on("agent_end", (event, ctx) => {
 		const messages = (

@@ -30,6 +30,9 @@ function makeState(): RalphLoopState {
 		stop_requested: false,
 		bundle_mode: false,
 		loop_token: "token-1",
+		model_provider: null,
+		model_id: null,
+		thinking_level: null,
 		bundle_snapshot_hash: null,
 		items_snapshot_hash: null,
 		progress_size: null,
@@ -98,6 +101,9 @@ test("old state files parse with default bundle metadata", () => {
 	assert.ok(state?.loop_token);
 	assert.equal(state?.owner_pid, null);
 	assert.equal(state?.owner_heartbeat_at, null);
+	assert.equal(state?.model_provider, null);
+	assert.equal(state?.model_id, null);
+	assert.equal(state?.thinking_level, null);
 	assert.equal(state?.bundle_snapshot_hash, null);
 	assert.equal(state?.items_snapshot_hash, null);
 	assert.equal(state?.progress_size, null);

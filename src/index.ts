@@ -12,6 +12,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { registerCommands } from "./commands.js";
 import { registerEventHandlers } from "./events.js";
+import { setLoopApi } from "./loop/api-context.js";
 
 const extensionDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = dirname(extensionDir);
@@ -23,6 +24,7 @@ function registerBundledResources(pi: ExtensionAPI): void {
 }
 
 export default function ralphLoopExtension(pi: ExtensionAPI): void {
+	setLoopApi(pi);
 	registerCommands(pi);
 	registerEventHandlers(pi);
 	registerBundledResources(pi);
