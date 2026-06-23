@@ -121,6 +121,28 @@ function findLastAssistantMessage(
 	return null;
 }
 
+/**
+ * Whether an assistant message ends on a toolCall. A turn that ends this way is
+ * parked on a pending async tool (such as a background subagent) that has not
+ * returned synchronously. That is an intentional suspension, not a dead
+ * provider: the turn resumes when the tool result lands, so Ralph must stay
+ * parked rather than arm the provider-error wait. Requiring an actual trailing
+ * toolCall (instead of a bare stopReason) keeps malformed/dropped provider
+ * output on the recovery path.
+ */
+function endsWithToolCall(assistant: {
+	content?: unknown;
+}): boolean {
+	const content = assistant.content;
+	if (!Array.isArray(content)) return false;
+	const last = content[content.length - 1];
+	return (
+		!!last &&
+		typeof last === "object" &&
+		(last as { type?: string }).type === "toolCall"
+	);
+}
+
 type BranchMessageEntry = {
 	type?: string;
 	message?: { role?: string; content?: unknown };
@@ -521,6 +543,14 @@ export function handleLoopAgentEnd(
 			`Provider error at Ralph iteration ${state.iteration}; waiting for Pi's retry handling before deciding the loop failed.`,
 			`Ralph loop stopped at iteration ${state.iteration}: provider error persisted after waiting for Pi retry handling. Resume after inspecting the partial work.`,
 		);
+		return;
+	}
+
+	if (endsWithToolCall(assistant)) {
+		// Async suspension: a pending async tool (such as a background
+		// subagent) is in flight, and the parent turn will resume when its
+		// result lands. Do not arm the provider-error wait or bump
+		// error_count; just stay parked.
 		return;
 	}
 

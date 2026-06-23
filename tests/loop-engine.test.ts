@@ -24,6 +24,8 @@ import type { RalphLoopState } from "../src/types.ts";
 type ScriptedResponse = {
 	stopReason?: string;
 	text: string;
+	/** When set, the assistant message ends with this toolCall (async suspension). */
+	toolCall?: { name: string; arguments?: Record<string, unknown> };
 };
 
 type MockAssistantEntry = {
@@ -319,11 +321,22 @@ function createHarness(): Harness {
 	const eventCtx = ctx as ExtensionContext;
 
 	function simulateAgentEnd(response: ScriptedResponse) {
+		const content: Array<{ type: "text"; text: string } | { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> }> = [
+			{ type: "text" as const, text: response.text },
+		];
+		if (response.toolCall) {
+			content.push({
+				type: "toolCall",
+				id: `call_${Date.now()}`,
+				name: response.toolCall.name,
+				arguments: response.toolCall.arguments ?? {},
+			});
+		}
 		const messages = [
 			{
 				role: "assistant" as const,
-				stopReason: response.stopReason ?? "stop",
-				content: [{ type: "text" as const, text: response.text }],
+				stopReason: response.stopReason ?? (response.toolCall ? "toolUse" : "stop"),
+				content,
 			},
 		];
 		handleLoopAgentEnd(currentPi, messages, eventCtx);
@@ -869,6 +882,29 @@ test("agent_end without terminal stopReason waits without injecting continue", (
 	assert.equal(h.readState()?.stop_reason, null);
 	assert.equal(h.readState()?.error_count, 1);
 	assert.deepEqual(h.sentMessages, []);
+});
+
+// A turn that ends on a trailing toolCall is an async suspension (e.g. a
+// background subagent in flight), not a dead provider. It must NOT arm the
+// provider-error wait, bump error_count, or finalize as error. The parent
+// turn will resume when the tool result lands; until then Ralph stays parked.
+// Contrast with the test above: no toolCall + non-terminal stopReason still
+// waits (genuine provider silence).
+test("agent_end ending in a toolCall (async suspension) does not arm the provider wait", () => {
+	const h = createHarness();
+	h.writeState(makeBaseState({ transitioning: false }));
+
+	h.simulateAgentEnd({
+		text: "Launching a background subagent.",
+		toolCall: { name: "subagent", arguments: { agent: "dummy-slow" } },
+	});
+
+	const state = h.readState();
+	assert.equal(state?.running, true, "loop must stay running while suspended");
+	assert.equal(state?.stop_reason, null, "must not finalize");
+	assert.equal(state?.error_count, 0, "must not count a suspension as an error");
+	assert.equal(state?.iteration, 1, "must not advance while suspended");
+	assert.deepEqual(h.sentMessages, [], "must not nudge or reseed while suspended");
 });
 
 test("agent_end missing control promise queues continue nudge", async () => {
