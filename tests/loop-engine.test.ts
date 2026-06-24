@@ -884,6 +884,62 @@ test("agent_end without terminal stopReason waits without injecting continue", (
 	assert.deepEqual(h.sentMessages, []);
 });
 
+// The provider-error "waiting for Pi's retry handling" banner is a problem
+// notice that previously lingered forever. As soon as the model resumes
+// working, it must be dismissed. A recovery turn landing (turn_end) is proof
+// the provider came back, so the widget must be cleared.
+test("provider-error notice is cleared once a recovery turn lands", () => {
+	const h = createHarness();
+	h.writeState(makeBaseState({ transitioning: false }));
+
+	h.simulateAgentEnd({ stopReason: "error", text: "partial" });
+	// The provider-error warning is now rendered in the widget.
+	assert.equal(
+		typeof h.widgets.at(-1)?.content,
+		"function",
+		"provider error must show the waiting notice",
+	);
+
+	// Pi recovers and the agent keeps working: a new turn lands.
+	handleLoopTurnEnd(h.pi, h.ctx, {
+		message: { role: "assistant", content: [{ type: "text", text: "working" }] },
+	});
+
+	assert.equal(
+		h.widgets.at(-1)?.content,
+		undefined,
+		"recovery turn must clear the stale waiting notice",
+	);
+});
+
+// Recovery can also be signalled by an agent_end (single-turn recovery), not
+// just a turn_end. The stale waiting notice must be cleared there too. (A
+// recovered turn that still forgets its promise then renders a fresh nudge
+// warning, so we assert the clear was emitted, not that it is the final
+// widget.)
+test("provider-error notice is cleared on a recovery agent_end", () => {
+	const h = createHarness();
+	h.writeState(makeBaseState({ transitioning: false }));
+
+	h.simulateAgentEnd({ stopReason: "error", text: "partial" });
+	assert.equal(typeof h.widgets.at(-1)?.content, "function");
+
+	// Capture the widget log up to the recovery turn, then assert only over the
+	// slice it produced. The notice type is module-global state that survives
+	// across tests, so a leading clear (or none) from prior tests must not
+	// skew the assertion either way.
+	const baseline = h.widgets.length;
+
+	// Retry succeeds; the recovered turn ends cleanly.
+	h.simulateAgentEnd({ stopReason: "stop", text: "recovered, forgot the tag" });
+
+	const recovery = h.widgets.slice(baseline);
+	assert.ok(
+		recovery.some((w) => w.content === undefined),
+		"recovery agent_end must dismiss the stale waiting notice",
+	);
+});
+
 // A turn that ends on a trailing toolCall is an async suspension (e.g. a
 // background subagent in flight), not a dead provider. It must NOT arm the
 // provider-error wait, bump error_count, or finalize as error. The parent
@@ -903,6 +959,52 @@ test("agent_end ending in a toolCall (async suspension) does not arm the provide
 	assert.equal(state?.running, true, "loop must stay running while suspended");
 	assert.equal(state?.stop_reason, null, "must not finalize");
 	assert.equal(state?.error_count, 0, "must not count a suspension as an error");
+	assert.equal(state?.iteration, 1, "must not advance while suspended");
+	assert.deepEqual(h.sentMessages, [], "must not nudge or reseed while suspended");
+});
+
+// Regression guard for the interaction between the notice-dismissal fix and
+// async suspension. A subagent launch (or an ask_user call) ends the
+// assistant message in a toolCall. If that turn lands while a provider-error
+// "waiting for Pi's retry handling" warning is on screen, the warning must be
+// cleared (the model resumed — it is running the subagent/ask_user), AND the
+// loop must stay correctly parked: no second error_count bump, no finalize,
+// no nudge. The clearLoopNotice path must not interfere with suspension.
+test("a toolCall turn after a provider error clears the warning but stays parked", () => {
+	const h = createHarness();
+	h.writeState(makeBaseState({ transitioning: false }));
+
+	// Provider error arms the wait and shows the waiting warning.
+	h.simulateAgentEnd({ stopReason: "error", text: "partial" });
+	assert.equal(
+		typeof h.widgets.at(-1)?.content,
+		"function",
+		"provider error must show the waiting notice",
+	);
+	assert.equal(h.readState()?.error_count, 1);
+
+	// Capture before the recovering turn so the assertion is immune to the
+	// module-global _noticeType leaking from earlier tests.
+	const baseline = h.widgets.length;
+
+	// Pi recovers and the model emits a turn that launches a subagent (same
+	// shape as an ask_user tool call): ends in a toolCall.
+	h.simulateAgentEnd({
+		text: "Launching a background subagent.",
+		toolCall: { name: "subagent", arguments: { agent: "dummy-slow" } },
+	});
+
+	// The stale waiting warning was dismissed.
+	assert.ok(
+		h.widgets.slice(baseline).some((w) => w.content === undefined),
+		"the recovering toolCall turn must clear the stale warning",
+	);
+
+	// ...and the loop is still parked, exactly as a plain suspension would be.
+	const state = h.readState();
+	assert.equal(state?.running, true, "must stay running while suspended");
+	assert.equal(state?.stop_reason, null, "must not finalize");
+	assert.equal(state?.error_count, 1, "recovery must not bump error_count again");
 	assert.equal(state?.iteration, 1, "must not advance while suspended");
 	assert.deepEqual(h.sentMessages, [], "must not nudge or reseed while suspended");
 });

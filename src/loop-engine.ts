@@ -34,6 +34,7 @@ import {
 	supersedeProviderWait,
 } from "./loop/provider-wait.js";
 import {
+	clearLoopNotice,
 	clearLoopStatus,
 	setLoopStatus,
 	showLoopNotice,
@@ -255,6 +256,10 @@ function markIterationStarted(
 	state: RalphLoopState,
 ): void {
 	resetIterationCounters();
+	// Start each iteration with a clean notice surface: any leftover banner
+	// from the previous iteration (provider-error warning, nudge, etc.) must
+	// not bleed into the fresh session.
+	clearLoopNotice(ctx);
 	setLoopStatus(ctx, state.iteration, state.max_iterations);
 	updateState(ctx.cwd, {
 		transitioning: false,
@@ -440,6 +445,10 @@ export function handleLoopTurnEnd(
 	// agent_end alone is too late: a long multi-turn recovery emits no agent_end
 	// until the whole unit finishes, which can be many minutes after the error.
 	supersedeProviderWait();
+	// The model is working again, so the stale provider-error notice is no
+	// longer accurate. Clear it so the "waiting for Pi's retry handling"
+	// banner does not sit over a healthy recovering iteration.
+	clearLoopNotice(ctx);
 
 	if (areLimitRemindersDisabled()) return;
 	if (extractControlPromise(event?.message ?? null)) return;
@@ -516,6 +525,10 @@ export function handleLoopAgentEnd(
 	// prior provider-error turn is superseded. Supersede before deciding this
 	// turn; a fresh provider error below will arm its own wait.
 	supersedeProviderWait();
+	// The prior turn's notice (e.g. a "waiting for Pi's retry handling"
+	// warning) is now stale: the model resumed. Clear it. Any notice this
+	// handler emits below overwrites the clear.
+	clearLoopNotice(ctx);
 
 	if (shouldStop(ctx.cwd)) {
 		handleRequestedStop(ctx, state);
