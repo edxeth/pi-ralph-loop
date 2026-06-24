@@ -129,7 +129,7 @@ System-level Ralph loops must not discover basic host, permission, or runtime bl
 
 Run only safe preflight checks during planning. Do not install packages, mutate services, start privileged workflows, or trigger interactive permission prompts unless the user explicitly approves that planning action.
 
-If unresolved system uncertainty could make the Ralph loop spin, do not write the four `.ralph/` files. Inspect more, research more, or ask the user. Encode confirmed constraints in `.ralph/plan.md`; add startup checks to `.ralph/prompt.md` only for facts the runtime agent must revalidate.
+If unresolved system uncertainty could make the Ralph loop spin, do not write the four `.ralph/` files. Inspect more, research more, or ask the user. If every useful acceptance path depends on unavailable credentials, accounts, paid services, hardware, admin permissions, destructive approval, or verification dependencies with no safe local substitute, do not write the bundle. Encode confirmed constraints in `.ralph/plan.md`; add startup checks to `.ralph/prompt.md` only for facts the runtime agent must revalidate.
 
 ## Item design
 
@@ -214,6 +214,9 @@ Rules:
 - Do not delete items after creation.
 - Do not rewrite `description` or `steps` after creation.
 - Move `passes` to `true` only after end-to-end verification.
+- Treat ordinary ambiguity as implementation work: make a conservative, reversible assumption, document it in `.ralph/progress.md`, and keep moving.
+- Keep `passes` as `false` only for hard blockers: missing credentials, external accounts, paid services, hardware, admin permissions, destructive approval, or an unavailable verification dependency with no safe local substitute.
+- Use `regression_notes` for hard blockers discovered after bundle creation. Do not add new item fields.
 - If a passing item regresses, set `passes` back to `false` and explain in `regression_notes`.
 
 ## `.ralph/progress.md`
@@ -226,16 +229,26 @@ Make the prompt self-contained for a fresh context window. Do not assume the run
 
 Instruct the runtime agent to:
 
+- treat the session as unattended: do not ask the user questions, request approval, or wait for human input
+- do not use tools whose purpose is to ask the user, collect approval, or wait for human input
 - read `.ralph/plan.md`, `.ralph/items.json`, and `.ralph/progress.md` first
 - ignore PRD/SPEC source files unless `runtime_contract.source_docs` lists paths
 - when `source_docs` lists paths, treat them as protected secondary evidence; read them only when the selected item needs clarification
 - inspect recent git history and current repo state
 - choose one unfinished item using `.ralph/plan.md` prioritization
+- do not choose an item already recorded as hard-blocked unless new evidence shows the blocker is gone
 - treat `.ralph/items.json` as the only authoritative Ralph item list
 - ignore any secondary task source, todo list, issue queue, planner state, chat memory, or harness-local task tracker when choosing Ralph work
 - use secondary planners or harness-local task trackers, if present, only for the already-selected item and never to choose or start another item
 - follow `.ralph/plan.md` and `.ralph/items.json` when source docs conflict with the generated bundle
 - work only on that item
+- when the selected item has ordinary ambiguity, make a conservative, reversible assumption and record the assumption in `.ralph/progress.md`; do not ask the user
+- when the selected item needs credentials, external accounts, paid services, hardware, admin permissions, destructive approval, or an unavailable verification dependency, first look for a safe local substitute such as a mock, fixture, fake service, local no-network adapter, or narrower item-specific check that still satisfies the item honestly
+- substitutes apply only to the selected item's own external dependency; never weaken, narrow, skip, or bypass `runtime_contract.verification_gates`
+- if a safe substitute is used, document exactly what was substituted and what remains unverified in `.ralph/progress.md`; do not claim real external integration was verified
+- set `passes` to `true` after using a substitute only when the substitute fully satisfies the item's stated `steps`; if the item genuinely requires the unavailable external dependency, keep `passes` as `false`
+- if no safe substitute exists, record the hard blocker in `.ralph/progress.md`, keep that item's `passes` value `false`, add a concise `regression_notes` blocker if useful, and choose a different unfinished item that can proceed without human input
+- if no remaining unfinished item can proceed without human input, do not fabricate a pass; append each known hard blocker to `.ralph/progress.md` once, leave all `passes` values unchanged, and end without emitting `NEXT` or `COMPLETE`
 - run every required verification gate
 - update `.ralph/items.json` by changing `passes` and `regression_notes` only
 - append one `.ralph/progress.md` entry with the item, decision rationale, changed files, verification results, and next-iteration notes

@@ -1,6 +1,7 @@
 import type {
 	ExtensionAPI,
 	ExtensionContext,
+	ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
 import { finalizeLoop } from "./loop/finalize.js";
 import { isLoopOwnerActive } from "./loop/ownership.js";
@@ -12,8 +13,23 @@ import {
 } from "./loop/model-state.js";
 import { readState, updateState } from "./state.js";
 
+const BLOCKED_TOOLS_ENV = "RALPH_BLOCKED_TOOLS";
+
 function isLoopRunning(cwd: string): boolean {
 	return readState(cwd)?.running === true;
+}
+
+function getBlockedToolNames(): Set<string> {
+	return new Set(
+		(process.env[BLOCKED_TOOLS_ENV] ?? "")
+			.split(",")
+			.map((name) => name.trim())
+			.filter((name) => name.length > 0),
+	);
+}
+
+function getBlockedToolReason(toolName: string): string {
+	return `Tool "${toolName}" is illegal to use during Ralph loops because it can block loop execution. The user is AFK during these loops; this is fully AI-driven development without human intervention.`;
 }
 
 function restoreLoopStatus(ctx: ExtensionContext): void {
@@ -61,6 +77,17 @@ function handleBlockedSessionMutation(
 		"warning",
 	);
 	return { cancel: true };
+}
+
+function handleBlockedToolCall(event: ToolCallEvent, ctx: ExtensionContext) {
+	if (!isLoopRunning(ctx.cwd)) return;
+
+	const blockedToolNames = getBlockedToolNames();
+	if (!blockedToolNames.has(event.toolName)) return;
+
+	const reason = getBlockedToolReason(event.toolName);
+	ctx.ui.notify(reason, "warning");
+	return { block: true, reason };
 }
 
 function handleSessionShutdown(
@@ -121,6 +148,7 @@ function handleSessionStart(
 
 export function registerEventHandlers(pi: ExtensionAPI): void {
 	pi.on("session_before_switch", handleSessionBeforeSwitch);
+	pi.on("tool_call", handleBlockedToolCall);
 	pi.on("session_before_fork", async (_event, ctx) =>
 		handleBlockedSessionMutation("fork", ctx),
 	);

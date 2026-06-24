@@ -120,6 +120,82 @@ test("session_before_switch blocks resume while loop is running", async () => {
 	});
 });
 
+test("tool_call blocks configured tools while loop is running", async () => {
+	const previous = process.env.RALPH_BLOCKED_TOOLS;
+	process.env.RALPH_BLOCKED_TOOLS = "human_tool";
+	try {
+		const h = createEventsHarness();
+		writeState(h.cwd, makeEventsState(), "task");
+
+		const result = await h.handlers.get("tool_call")?.(
+			{ toolName: "human_tool", toolCallId: "call-1", input: {} },
+			h.ctx,
+		);
+
+		assert.deepEqual(result, {
+			block: true,
+			reason:
+				'Tool "human_tool" is illegal to use during Ralph loops because it can block loop execution. The user is AFK during these loops; this is fully AI-driven development without human intervention.',
+		});
+		assert.deepEqual(h.notifications.at(-1), {
+			message:
+				'Tool "human_tool" is illegal to use during Ralph loops because it can block loop execution. The user is AFK during these loops; this is fully AI-driven development without human intervention.',
+			type: "warning",
+		});
+	} finally {
+		if (previous === undefined) {
+			delete process.env.RALPH_BLOCKED_TOOLS;
+		} else {
+			process.env.RALPH_BLOCKED_TOOLS = previous;
+		}
+	}
+});
+
+test("tool_call ignores unconfigured tools while loop is running", async () => {
+	const previous = process.env.RALPH_BLOCKED_TOOLS;
+	process.env.RALPH_BLOCKED_TOOLS = "human_tool";
+	try {
+		const h = createEventsHarness();
+		writeState(h.cwd, makeEventsState(), "task");
+
+		const result = await h.handlers.get("tool_call")?.(
+			{ toolName: "bash", toolCallId: "call-1", input: {} },
+			h.ctx,
+		);
+
+		assert.equal(result, undefined);
+		assert.deepEqual(h.notifications, []);
+	} finally {
+		if (previous === undefined) {
+			delete process.env.RALPH_BLOCKED_TOOLS;
+		} else {
+			process.env.RALPH_BLOCKED_TOOLS = previous;
+		}
+	}
+});
+
+test("tool_call ignores configured tools outside a running loop", async () => {
+	const previous = process.env.RALPH_BLOCKED_TOOLS;
+	process.env.RALPH_BLOCKED_TOOLS = "human_tool";
+	try {
+		const h = createEventsHarness();
+
+		const result = await h.handlers.get("tool_call")?.(
+			{ toolName: "human_tool", toolCallId: "call-1", input: {} },
+			h.ctx,
+		);
+
+		assert.equal(result, undefined);
+		assert.deepEqual(h.notifications, []);
+	} finally {
+		if (previous === undefined) {
+			delete process.env.RALPH_BLOCKED_TOOLS;
+		} else {
+			process.env.RALPH_BLOCKED_TOOLS = previous;
+		}
+	}
+});
+
 test("session_shutdown marks cancellation request", () => {
 	const h = createEventsHarness();
 	writeState(h.cwd, makeEventsState(), "task");

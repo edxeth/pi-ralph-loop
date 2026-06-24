@@ -220,6 +220,15 @@ The prompt body lives below the frontmatter. `/ralph-resume` and `/ralph-restart
 
 While a loop runs, the extension blocks `/resume`, `/new`, `/fork`, and `/tree` in that Pi instance. Open another Pi instance to inspect old iterations while Ralph keeps running.
 
+Some third-party tools open custom human-input UIs and then wait forever until a person answers. Ralph cannot reliably recover after such a tool has already started, because Pi does not expose a generic "this tool is waiting for a human" signal and some custom UIs ignore abort. Prevent known blockers with a user-owned tool-name list:
+
+```bash
+export RALPH_BLOCKED_TOOLS=tool_name_1,tool_name_2
+pi
+```
+
+For example, if an installed tool is useful in normal Pi sessions but unsafe for unattended Ralph runs, put that tool's exact name in `RALPH_BLOCKED_TOOLS`. Ralph only blocks the configured tool while `.ralph/loop.md` says a loop is running in the current workspace. Normal Pi usage outside a running Ralph loop is unaffected.
+
 Ralph waits through provider retry handling and missing terminal stop reasons instead of advancing early. User aborts stop the loop before the next iteration starts. Stale state resets on startup.
 
 If you launch Pi through RPC, an API wrapper, or a subprocess, keep that Pi process and its stdin open for the whole Ralph run. A one-shot wrapper that sends `/ralph-loop` and then closes stdin tells Pi to quit; Ralph may accept `<promise>NEXT</promise>` but the host can exit before the fresh-session handoff runs. If this happens, run `/ralph-resume` from a long-lived Pi session.
