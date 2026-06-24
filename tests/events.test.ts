@@ -205,6 +205,68 @@ test("session_shutdown marks cancellation request", () => {
 	assert.equal(readState(h.cwd)?.cancel_requested, true);
 });
 
+test("session_shutdown ignores a non-owner process quitting", () => {
+	// Any other pi process in the same workspace (a one-shot `pi -p`, a helper
+	// spawned by some extension, or just a second `pi` in the folder) loads the
+	// extension and exits, firing session_shutdown reason "quit". Its pid differs
+	// from the loop owner's pid, so it must NOT cancel the running loop.
+	const h = createEventsHarness();
+	writeState(
+		h.cwd,
+		makeEventsState({
+			owner_pid: process.pid + 1,
+			owner_heartbeat_at: new Date().toISOString(),
+		}),
+		"task",
+	);
+
+	h.handlers.get("session_shutdown")?.({ reason: "quit" }, h.ctx);
+
+	const state = readState(h.cwd);
+	assert.equal(state?.cancel_requested, false);
+	assert.equal(state?.running, true);
+});
+
+test("session_shutdown still cancels when the owner process quits", () => {
+	// Regression guard: a genuine cancel by the loop-owning process (its pid
+	// matches owner_pid) must still mark the loop cancelled.
+	const h = createEventsHarness();
+	writeState(
+		h.cwd,
+		makeEventsState({
+			owner_pid: process.pid,
+			owner_heartbeat_at: new Date().toISOString(),
+		}),
+		"task",
+	);
+
+	h.handlers.get("session_shutdown")?.({ reason: "quit" }, h.ctx);
+
+	assert.equal(readState(h.cwd)?.cancel_requested, true);
+});
+
+test("session_shutdown ignores a non-owner quit during a committed handoff", () => {
+	// Another non-owner process quitting while the owner is mid-handoff must not
+	// finalize the loop as interrupted; the owner's transition is untouched.
+	const h = createEventsHarness();
+	writeState(
+		h.cwd,
+		makeEventsState({
+			transitioning: true,
+			owner_pid: process.pid + 1,
+			owner_heartbeat_at: new Date().toISOString(),
+		}),
+		"task",
+	);
+
+	h.handlers.get("session_shutdown")?.({ reason: "quit" }, h.ctx);
+
+	const state = readState(h.cwd);
+	assert.equal(state?.running, true);
+	assert.equal(state?.transitioning, true);
+	assert.equal(state?.stop_reason, null);
+});
+
 test("session_shutdown leaves a quit during a committed handoff resumable", () => {
 	const h = createEventsHarness();
 	writeState(h.cwd, makeEventsState({ transitioning: true }), "task");

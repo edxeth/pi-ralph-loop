@@ -98,6 +98,14 @@ function handleSessionShutdown(
 	const state = readState(cwd);
 	if (!state?.running) return;
 
+	// Only the loop's owner process may cancel it by shutting down. Any other
+	// pi process in this workspace (a one-shot `pi -p`, a helper spawned by some
+	// extension, an observer session, or a second `pi` window) that exits is a
+	// no-op — its pid differs from the recorded owner_pid. owner_pid is the
+	// identity gate; crash/reboot recovery is handled separately by the heartbeat
+	// on session_start, so do not treat pid alone as a liveness proof.
+	if (state.owner_pid !== null && state.owner_pid !== process.pid) return;
+
 	if (state.transitioning) {
 		if (event.reason === "quit" || event.reason === "reload") {
 			// A NEXT was already accepted and the iteration advanced, but the

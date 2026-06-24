@@ -418,6 +418,65 @@ test("live pi RPC: observer startup preserves an active loop owner", {
 	}
 });
 
+test("live pi RPC: a non-owner process quitting does not cancel the loop", {
+	skip: !SHOULD_RUN,
+}, async () => {
+	// Reproduces the false "user_cancelled": any other pi process in the same
+	// workdir (here a second RPC pi process) loads the extension and exits,
+	// firing session_shutdown reason "quit" from a pid that is not the owner.
+	// The owner loop must keep running and complete normally.
+	const fakeProvider = resolve(
+		process.cwd(),
+		"tests",
+		"fixtures",
+		"fake-slow-complete-provider.ts",
+	);
+	const owner = createRpcHarness({
+		extraExtensions: [fakeProvider],
+		model: "ralph-fake/slow-complete",
+		env: { RALPH_FAKE_API_KEY: "unused-but-present" },
+	});
+	let sibling: RpcHarness | null = null;
+	try {
+		owner.sendPrompt(
+			'/ralph-loop "Stay active briefly, then complete." --max-iterations=1',
+		);
+		const active = await owner.waitForState(
+			/running:\s*true[\s\S]*iteration:\s*1[\s\S]*transitioning:\s*false/,
+			60_000,
+		);
+		assert.match(active, /owner_pid:\s*\d+/);
+
+		// Start a second pi in the SAME workdir, let it load the extension, then
+		// stop it. Its .stop() sends SIGTERM -> rpc shutdown -> runtimeHost.dispose()
+		// -> session_shutdown reason "quit", from a pid != owner_pid.
+		sibling = createRpcHarness({
+			workdir: owner.workdir,
+			extraExtensions: [fakeProvider],
+			model: "ralph-fake/slow-complete",
+			env: { RALPH_FAKE_API_KEY: "unused-but-present" },
+		});
+		await sibling.waitForStartup();
+		await sibling.stop();
+		// Give the owner a moment to observe (and, before the fix, react to) the
+		// sibling's shutdown before it completes on its own.
+		await new Promise((resolve) => setTimeout(resolve, 3_000));
+
+		const afterSiblingQuit = owner.readStateText();
+		assert.doesNotMatch(afterSiblingQuit, /cancel_requested:\s*true/);
+		assert.doesNotMatch(afterSiblingQuit, /stop_reason:\s*"user_cancelled"/);
+
+		const finalState = await owner.waitForFinalState(
+			/stop_reason:\s*"complete"/,
+			120_000,
+	);
+		assert.match(finalState, /stop_reason:\s*"complete"/);
+	} finally {
+		if (sibling) await sibling.stop();
+		await owner.stop();
+	}
+});
+
 test("live pi RPC: accepted bundle NEXT creates a fresh session", {
 	skip: !SHOULD_RUN,
 }, async () => {
