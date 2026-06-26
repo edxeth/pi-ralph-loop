@@ -5,9 +5,9 @@ const LOOP_NOTICE_WIDGET = "ralph-loop-notice";
 const LOOP_NOTICE_CLEAR_MS = 2_500;
 let _noticeToken = 0;
 // Type of the notice currently rendered in the widget, or null when it is
-// empty. Used by clearLoopNotice to dismiss only problem notices (warnings /
-// errors) and leave transient info confirmations ("Ralph loop started",
-// "Starting iteration N") alone — those auto-clear on their own.
+// empty. Used by clearLoopNotice to dismiss problem notices (warnings / errors)
+// by default while allowing lifecycle boundaries like resume/restart to clear
+// stale info notices too.
 let _noticeType: "info" | "warning" | "error" | null = null;
 
 export function setLoopStatus(
@@ -62,12 +62,21 @@ export function showLoopNotice(
  * them. No-op when the UI has no widget support — there the notify fallback
  * owns its own dismissal.
  */
-export function clearLoopNotice(ctx: ExtensionContext): void {
+export function clearLoopNotice(
+	ctx: ExtensionContext,
+	options: { includeInfo?: boolean } = {},
+): void {
 	const ui = ctx.ui as ExtensionContext["ui"] & {
 		setWidget?: ExtensionContext["ui"]["setWidget"];
 	};
 	if (!ui.setWidget) return;
-	if (_noticeType !== "warning" && _noticeType !== "error") return;
+	if (
+		_noticeType !== "warning" &&
+		_noticeType !== "error" &&
+		!(options.includeInfo === true && _noticeType === "info")
+	) {
+		return;
+	}
 	_noticeType = null;
 	ui.setWidget(LOOP_NOTICE_WIDGET, undefined, { placement: "aboveEditor" });
 }

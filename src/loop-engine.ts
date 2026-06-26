@@ -814,6 +814,7 @@ export function handleLoopAgentEnd(
 			ctx,
 			`Ralph loop cancelled by user at iteration ${state.iteration}`,
 			"info",
+			{ autoClear: true },
 		);
 		finalizeLoop(ctx, ctx.cwd, "user_cancelled", state.error_count);
 		return;
@@ -979,6 +980,7 @@ export async function resumeCurrentSession(
 
 	setCommandCtx(ctx);
 	resetIterationCounters();
+	clearLoopNotice(ctx, { includeInfo: true });
 
 	updateState(ctx.cwd, {
 		running: true,

@@ -18,6 +18,7 @@ import {
 	handleLoopInput,
 	handleLoopTurnEnd,
 	PROVIDER_ERROR_MAX_WAIT_MS,
+	resumeCurrentSession,
 	runLoop,
 	WAIT_PARK_TIMEOUT_MS,
 } from "../src/loop-engine.ts";
@@ -885,6 +886,28 @@ test("turn_end skips Ralph limit reminder after terminal promise", () => {
 	});
 
 	assert.equal(h.customMessages.length, 0);
+});
+
+test("resume clears stale cancellation notice after aborted turn", async () => {
+	const h = createHarness();
+	h.writeState(makeBaseState({ transitioning: false }));
+
+	h.simulateAgentEnd({ stopReason: "aborted", text: "Interrupted" });
+	assert.equal(h.readState()?.running, false);
+	assert.equal(h.readState()?.stop_reason, "user_cancelled");
+	assert.equal(h.widgets.at(-1)?.key, "ralph-loop-notice");
+	assert.equal(typeof h.widgets.at(-1)?.content, "function");
+
+	await resumeCurrentSession(h.pi, h.ctx);
+
+	assert.equal(h.widgets.at(-1)?.key, "ralph-loop-notice");
+	assert.equal(
+		h.widgets.at(-1)?.content,
+		undefined,
+		"same-session resume must clear stale cancellation banner",
+	);
+	assert.equal(h.readState()?.running, true);
+	assert.equal(h.readState()?.stop_reason, null);
 });
 
 test("agent_end with provider error waits without injecting continue", () => {
