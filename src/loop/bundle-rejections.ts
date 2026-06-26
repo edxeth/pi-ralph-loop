@@ -39,7 +39,7 @@ export function rejectBundlePromise(
 	const rejectionCount = state.bundle_rejection_count + 1;
 	updateState(ctx.cwd, { bundle_rejection_count: rejectionCount });
 
-	if (rejectionCount >= MAX_BUNDLE_REJECTIONS) {
+	if (rejectionCount > MAX_BUNDLE_REJECTIONS) {
 		ctx.ui.notify(
 			`Ralph loop failed at iteration ${state.iteration}: bundle invariant rejected ${rejectionCount} times. Last invariant: ${rejection}`,
 			"error",
@@ -49,7 +49,7 @@ export function rejectBundlePromise(
 	}
 
 	ctx.ui.notify(
-		`Ralph rejected <promise>${promise}</promise> (${rejectionCount}/${MAX_BUNDLE_REJECTIONS - 1}): ${rejection}`,
+		`Ralph rejected <promise>${promise}</promise> (${rejectionCount}/${MAX_BUNDLE_REJECTIONS}): ${rejection}`,
 		"error",
 	);
 	sendWhenIdle(pi, ctx, buildBundleRejectionPrompt(promise, rejection));

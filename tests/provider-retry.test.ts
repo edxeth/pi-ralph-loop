@@ -47,6 +47,7 @@ function makeState(overrides: Partial<RalphLoopState> = {}): RalphLoopState {
 		bundle_items_snapshot: null,
 		git_head: null,
 		bundle_rejection_count: 0,
+		provider_recovery_fresh_fallback_used: false,
 		limit_reminders: null,
 		...overrides,
 	};
@@ -55,6 +56,7 @@ function makeState(overrides: Partial<RalphLoopState> = {}): RalphLoopState {
 function createHarness() {
 	const cwd = mkdtempSync(join(tmpdir(), "ralph-retry-"));
 	const notifications: Array<{ message: string; type: string }> = [];
+	const sentMessages: string[] = [];
 
 	// During Pi's auto-retry backoff the agent is NOT streaming, so the
 	// extension sees isIdle() === true the entire time a retry is pending.
@@ -77,7 +79,7 @@ function createHarness() {
 	} as unknown as ExtensionContext;
 
 	const pi = {
-		sendUserMessage: () => {},
+		sendUserMessage: (message: string) => sentMessages.push(message),
 		sendMessage: () => {},
 		setSessionName: () => {},
 	} as unknown as ExtensionAPI;
@@ -87,6 +89,7 @@ function createHarness() {
 		ctx,
 		pi,
 		notifications,
+		sentMessages,
 		writeState: (s: RalphLoopState) => writeState(cwd, s, "task"),
 		readState: () => readState(cwd),
 		agentEnd: (stopReason: string, text: string) =>
@@ -123,24 +126,23 @@ test("provider error keeps the loop alive while a retry could still land", () =>
 	}
 });
 
-test("provider error finalizes as error once the retry window fully elapses", () => {
-	mock.timers.enable({ apis: ["setTimeout"] });
+test("provider error sends a recovery nudge once the retry window and countdown elapse", () => {
+	mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
 	try {
 		const h = createHarness();
 		h.writeState(makeState());
 
 		h.agentEnd("error", "partial work before the WebSocket error");
 
-		// No further agent_end arrives: Pi's retries are exhausted and the agent
-		// stays silent. After the full window, Ralph gives up.
 		mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS);
+		assert.equal(h.readState()?.running, true);
+		assert.equal(h.readState()?.stop_reason, null);
+		assert.deepEqual(h.sentMessages, []);
 
-		assert.equal(h.readState()?.running, false);
-		assert.equal(h.readState()?.stop_reason, "error");
-		assert.match(
-			h.notifications.at(-1)?.message ?? "",
-			/provider error persisted/,
-		);
+		mock.timers.tick(60_000);
+		assert.equal(h.readState()?.running, true);
+		assert.equal(h.readState()?.stop_reason, null);
+		assert.equal(h.sentMessages.at(-1), "continue");
 	} finally {
 		mock.timers.reset();
 	}
@@ -222,7 +224,7 @@ test("a NEXT that lands after the backoff is honored and advances the loop", () 
 });
 
 test("a second provider error re-arms the window and supersedes the first wait", () => {
-	mock.timers.enable({ apis: ["setTimeout"] });
+	mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
 	try {
 		const h = createHarness();
 		h.writeState(makeState());
@@ -235,16 +237,21 @@ test("a second provider error re-arms the window and supersedes the first wait",
 		h.agentEnd("error", "second failed attempt");
 		assert.equal(h.readState()?.error_count, 2);
 
-		// Reaching the FIRST wait's original deadline must not finalize: that wait
-		// was superseded, and the second window has not elapsed yet.
+		// Reaching the FIRST wait's original deadline must not nudge or finalize:
+		// that wait was superseded, and the second window has not elapsed yet.
 		mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS - 5_000);
 		assert.equal(h.readState()?.running, true);
 		assert.equal(h.readState()?.stop_reason, null);
+		assert.deepEqual(h.sentMessages, []);
 
-		// Completing the SECOND window finalizes exactly once, as an error.
+		// Completing the SECOND retry window starts Ralph's recovery countdown.
 		mock.timers.tick(5_000);
-		assert.equal(h.readState()?.running, false);
-		assert.equal(h.readState()?.stop_reason, "error");
+		assert.equal(h.readState()?.running, true);
+		assert.equal(h.readState()?.stop_reason, null);
+		assert.deepEqual(h.sentMessages, []);
+
+		mock.timers.tick(60_000);
+		assert.equal(h.sentMessages.at(-1), "continue");
 		assert.equal(h.readState()?.error_count, 2);
 	} finally {
 		mock.timers.reset();

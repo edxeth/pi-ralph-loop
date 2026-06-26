@@ -577,6 +577,45 @@ test("live pi RPC: recovers from a provider error via Pi's auto-retry", {
 	}
 });
 
+test("live pi RPC: Ralph recovery nudge resumes after Pi retry exhaustion", {
+	skip: !SHOULD_RUN,
+}, async () => {
+	const fakeProvider = resolve(
+		process.cwd(),
+		"tests",
+		"fixtures",
+		"fake-recovery-provider.ts",
+	);
+	const h = createRpcHarness({
+		extraExtensions: [fakeProvider],
+		model: "ralph-fake/recovery",
+		env: {
+			RALPH_FAKE_API_KEY: "unused-but-present",
+			RALPH_TEST_PROVIDER_RETRY_WAIT_MS: "50",
+			RALPH_TEST_PROVIDER_RECOVERY_NUDGE_DELAY_MS: "50",
+			RALPH_TEST_PROVIDER_RECOVERY_FALLBACK_DELAY_MS: "50",
+		},
+	});
+	try {
+		h.sendPrompt(
+			'/ralph-loop "Fail until Ralph sends continue, then complete." --max-iterations=1',
+		);
+		const state = await h.waitForFinalState(
+			/stop_reason:\s*"complete"/,
+			120_000,
+		);
+		assert.match(state, /error_count:\s*[1-9]/);
+		const session = h.stateField(state, "last_session_file");
+		const userMessages = h.userTexts(session);
+		assert.ok(
+			userMessages.some((message) => message.startsWith("continue")),
+			"Ralph recovery should inject a continue nudge after Pi retries exhaust",
+		);
+	} finally {
+		await h.stop();
+	}
+});
+
 test("live pi RPC: provider error resets the missing-promise nudge chain", {
 	skip: !SHOULD_RUN,
 }, async () => {
@@ -606,7 +645,7 @@ test("live pi RPC: provider error resets the missing-promise nudge chain", {
 		const userMessages = h.userTexts(session);
 		assert.equal(
 			userMessages.filter((message) => message === "continue").length,
-			4,
+			5,
 			"Ralph should send a fresh continue nudge after provider recovery",
 		);
 	} finally {

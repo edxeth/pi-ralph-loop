@@ -37,6 +37,7 @@ export interface RalphLoopState {
 	bundle_items_snapshot: string | null;
 	git_head: string | null;
 	bundle_rejection_count: number;
+	provider_recovery_fresh_fallback_used: boolean;
 	limit_reminders: string | null;
 }
 

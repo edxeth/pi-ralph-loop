@@ -43,6 +43,19 @@ import { getTaskBody, readState, updateState, writeState } from "./state.js";
 import type { RalphLoopState, RunLoopOptions } from "./types.js";
 
 const MAX_PROMISE_NUDGES = 5;
+const MAX_PROVIDER_RECOVERY_NUDGES = 5;
+const PROVIDER_RECOVERY_NUDGE_DELAY_MS = 60_000;
+const PROVIDER_RECOVERY_FRESH_FALLBACK_DELAY_MS = 300_000;
+const TEST_PROVIDER_RETRY_WAIT_ENV = "RALPH_TEST_PROVIDER_RETRY_WAIT_MS";
+const TEST_PROVIDER_RECOVERY_NUDGE_DELAY_ENV =
+	"RALPH_TEST_PROVIDER_RECOVERY_NUDGE_DELAY_MS";
+const TEST_PROVIDER_RECOVERY_FALLBACK_DELAY_ENV =
+	"RALPH_TEST_PROVIDER_RECOVERY_FALLBACK_DELAY_MS";
+const FINAL_PROVIDER_RECOVERY_NUDGE = [
+	"continue",
+	"Reminder: continue this same Ralph iteration.",
+	"Finish the current unit and emit exactly one promise tag on the last non-empty line when appropriate.",
+].join("\n");
 const FINAL_PROMISE_WARNING_NUDGE = [
 	"continue",
 	"Reminder: emit exactly one control tag on the LAST non-empty line when appropriate:",
@@ -50,11 +63,12 @@ const FINAL_PROMISE_WARNING_NUDGE = [
 	"- <promise>COMPLETE</promise> only when ALL tasks are fully done",
 ].join("\n");
 // How long Ralph waits for Pi's auto-retry after a provider-error turn before
-// declaring the loop dead. Pi retries with exponential backoff and is idle
-// (not streaming) between attempts, so Ralph cannot use idleness as the
-// give-up signal. Instead it waits out this window; any later agent_end (a
-// recovered turn or a fresh failure) supersedes the wait. Kept well above Pi's
-// max per-attempt retry delay so a genuine retry is never cut off.
+// Ralph spends one of its own recovery nudges. Pi retries with exponential
+// backoff and is idle (not streaming) between attempts, so Ralph cannot use
+// idleness as the give-up signal. Instead it waits out this window; any later
+// agent_end (a recovered turn or a fresh failure) supersedes the wait. Kept
+// well above Pi's max per-attempt retry delay so a genuine retry is never cut
+// off.
 export const PROVIDER_ERROR_MAX_WAIT_MS = 180_000;
 
 const TERMINAL_STOP_REASONS = new Set(["stop", "length", "error", "aborted"]);
@@ -69,14 +83,27 @@ type ReplacementSessionContext = Parameters<
 // Per-chain promise-nudge counter. Provider errors and fresh iterations start a
 // new missing-promise chain; accepted promises leave the chain by moving state.
 let _promiseNudges = 0;
+let _providerRecoveryNudges = 0;
 
 function resetPromiseNudgeChain(): void {
 	_promiseNudges = 0;
 }
 
+function resetProviderRecoveryChain(): void {
+	_providerRecoveryNudges = 0;
+}
+
 function resetIterationCounters(): void {
 	resetPromiseNudgeChain();
+	resetProviderRecoveryChain();
 	supersedeProviderWait();
+}
+
+function getDelayMs(envName: string, fallbackMs: number): number {
+	const raw = process.env[envName];
+	if (!raw) return fallbackMs;
+	const parsed = Number.parseInt(raw, 10);
+	return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallbackMs;
 }
 
 function shouldStop(cwd: string): boolean {
@@ -85,6 +112,7 @@ function shouldStop(cwd: string): boolean {
 }
 
 function armProviderErrorWait(
+	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	cwd: string,
 	loopToken: string,
@@ -105,10 +133,164 @@ function armProviderErrorWait(
 			return;
 		}
 
-		showLoopNotice(ctx, message, "error");
-		finalizeLoop(ctx, cwd, "error", errorCount);
-	}, PROVIDER_ERROR_MAX_WAIT_MS);
+		scheduleProviderRecoveryNudge(pi, ctx, cwd, latest, message);
+	}, getDelayMs(TEST_PROVIDER_RETRY_WAIT_ENV, PROVIDER_ERROR_MAX_WAIT_MS));
 	timeout.unref?.();
+}
+
+function isRecoveryCountdownCurrent(
+	cwd: string,
+	state: RalphLoopState,
+): RalphLoopState | null {
+	const latest = readState(cwd);
+	if (
+		!latest?.running ||
+		latest.loop_token !== state.loop_token ||
+		latest.iteration !== state.iteration ||
+		latest.error_count !== state.error_count
+	) {
+		return null;
+	}
+	return latest;
+}
+
+function scheduleRecoveryCountdown(
+	ctx: ExtensionContext,
+	cwd: string,
+	state: RalphLoopState,
+	durationMs: number,
+	formatMessage: (secondsRemaining: number) => string,
+	onComplete: (latest: RalphLoopState, token: number) => void,
+): void {
+	const token = armProviderWait();
+	let secondsRemaining = Math.ceil(durationMs / 1000);
+	const render = (): boolean => {
+		if (!isProviderWaitCurrent(token)) return false;
+		if (!isRecoveryCountdownCurrent(cwd, state)) return false;
+		showLoopNotice(ctx, formatMessage(secondsRemaining), "warning");
+		return true;
+	};
+
+	render();
+	const interval = setInterval(() => {
+		secondsRemaining = Math.max(0, secondsRemaining - 1);
+		if (!render()) clearInterval(interval);
+	}, 1_000);
+	interval.unref?.();
+
+	const timeout = setTimeout(() => {
+		clearInterval(interval);
+		if (!isProviderWaitCurrent(token)) return;
+		const latest = isRecoveryCountdownCurrent(cwd, state);
+		if (!latest) return;
+		onComplete(latest, token);
+	}, durationMs);
+	timeout.unref?.();
+}
+
+function sendProviderRecoveryNudgeWhenIdle(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	cwd: string,
+	state: RalphLoopState,
+	token: number,
+): void {
+	if (!isProviderWaitCurrent(token)) return;
+	if (!isRecoveryCountdownCurrent(cwd, state)) return;
+
+	if (ctx.isIdle()) {
+		const nudgeNumber = _providerRecoveryNudges + 1;
+		_providerRecoveryNudges = nudgeNumber;
+		pi.sendUserMessage(
+			nudgeNumber === MAX_PROVIDER_RECOVERY_NUDGES
+				? FINAL_PROVIDER_RECOVERY_NUDGE
+				: "continue",
+		);
+		return;
+	}
+
+	const timeout = setTimeout(
+		() => sendProviderRecoveryNudgeWhenIdle(pi, ctx, cwd, state, token),
+		250,
+	);
+	timeout.unref?.();
+}
+
+function scheduleProviderRecoveryNudge(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	cwd: string,
+	state: RalphLoopState,
+	message: string,
+): void {
+	if (_providerRecoveryNudges >= MAX_PROVIDER_RECOVERY_NUDGES) {
+		if (state.provider_recovery_fresh_fallback_used) {
+			showLoopNotice(
+				ctx,
+				`Ralph loop stopped at iteration ${state.iteration}: provider/agent recovery exhausted after the fresh fallback session. Resume after inspecting the partial work.`,
+				"error",
+			);
+			finalizeLoop(ctx, cwd, "error", state.error_count);
+			return;
+		}
+		scheduleProviderRecoveryFreshFallback(ctx, cwd, state);
+		return;
+	}
+
+	scheduleRecoveryCountdown(
+		ctx,
+		cwd,
+		state,
+		getDelayMs(
+			TEST_PROVIDER_RECOVERY_NUDGE_DELAY_ENV,
+			PROVIDER_RECOVERY_NUDGE_DELAY_MS,
+		),
+		(seconds) => `${message} Sending recovery continue in ${seconds}s.`,
+		(_latest, token) => {
+			sendProviderRecoveryNudgeWhenIdle(pi, ctx, cwd, state, token);
+		},
+	);
+}
+
+function scheduleProviderRecoveryFreshFallback(
+	ctx: ExtensionContext,
+	cwd: string,
+	state: RalphLoopState,
+): void {
+	scheduleRecoveryCountdown(
+		ctx,
+		cwd,
+		state,
+		getDelayMs(
+			TEST_PROVIDER_RECOVERY_FALLBACK_DELAY_ENV,
+			PROVIDER_RECOVERY_FRESH_FALLBACK_DELAY_MS,
+		),
+		(seconds) =>
+			`Provider/agent recovery exhausted at Ralph iteration ${state.iteration}; starting a same-iteration fresh fallback session in ${seconds}s.`,
+		(latest) => {
+			if (latest.provider_recovery_fresh_fallback_used) return;
+
+			const cmdCtx = getCommandCtx();
+			if (!cmdCtx || cmdCtx.cwd !== cwd) {
+				showLoopNotice(
+					ctx,
+					"Ralph loop error: lost command context for provider recovery fallback",
+					"error",
+				);
+				finalizeLoop(ctx, cwd, "error", latest.error_count);
+				return;
+			}
+
+			updateState(cwd, {
+				transitioning: true,
+				provider_recovery_fresh_fallback_used: true,
+			});
+			resetProviderRecoveryChain();
+			void openFreshIterationSession(cmdCtx, latest.error_count, {
+				snapshotBundle: false,
+			});
+		},
+	);
 }
 
 function findLastAssistantMessage(
@@ -188,6 +370,7 @@ function handleRequestedStop(
 }
 
 function handleProviderWait(
+	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	state: RalphLoopState,
 	message: string,
@@ -198,6 +381,7 @@ function handleProviderWait(
 	updateState(ctx.cwd, { error_count: errorCount });
 	showLoopNotice(ctx, message, "warning");
 	armProviderErrorWait(
+		pi,
 		ctx,
 		ctx.cwd,
 		state.loop_token,
@@ -254,6 +438,7 @@ function formatIterationSessionName(state: RalphLoopState): string {
 function markIterationStarted(
 	ctx: ExtensionContext,
 	state: RalphLoopState,
+	options: { snapshotBundle?: boolean } = {},
 ): void {
 	resetIterationCounters();
 	// Start each iteration with a clean notice surface: any leftover banner
@@ -268,7 +453,7 @@ function markIterationStarted(
 		...getLoopOwnerFields(),
 	});
 	startLoopHeartbeat(ctx.cwd, state.loop_token);
-	if (state.bundle_mode) {
+	if ((options.snapshotBundle ?? true) && state.bundle_mode) {
 		snapshotBundleIteration(ctx.cwd, state);
 	}
 }
@@ -305,6 +490,7 @@ function scheduleReplacementPrompt(
 async function openFreshIterationSession(
 	ctx: ExtensionCommandContext,
 	errorCount: number,
+	options: { snapshotBundle?: boolean } = {},
 ): Promise<void> {
 	const cwd = ctx.cwd;
 	const state = readState(cwd);
@@ -350,7 +536,9 @@ async function openFreshIterationSession(
 					return;
 				}
 
-				markIterationStarted(nextCtx, latest);
+				markIterationStarted(nextCtx, latest, {
+					snapshotBundle: options.snapshotBundle,
+				});
 				scheduleReplacementPrompt(nextCtx, task, latest.error_count);
 			},
 		});
@@ -422,9 +610,24 @@ function handleNextPromise(
 		iteration: nextIteration,
 		transitioning: true,
 		bundle_rejection_count: 0,
+		provider_recovery_fresh_fallback_used: false,
 		limit_reminders: null,
 	});
 	scheduleNextIteration(ctx, state);
+}
+
+export function handleLoopInput(
+	event: { source?: string },
+	ctx: ExtensionContext,
+): void {
+	if (event.source === "extension") return;
+	const state = readState(ctx.cwd);
+	if (!state?.running) return;
+
+	resetPromiseNudgeChain();
+	resetProviderRecoveryChain();
+	supersedeProviderWait();
+	clearLoopNotice(ctx);
 }
 
 export function handleLoopTurnEnd(
@@ -477,22 +680,22 @@ function handleMissingPromise(
 	state: RalphLoopState,
 ): void {
 	_promiseNudges++;
-	if (_promiseNudges >= MAX_PROMISE_NUDGES) {
+	if (_promiseNudges > MAX_PROMISE_NUDGES) {
 		showLoopNotice(
 			ctx,
-			`Ralph loop failed at iteration ${state.iteration}: assistant did not emit <promise>NEXT</promise>, <promise>COMPLETE</promise>, or <promise>STOP</promise> within ${MAX_PROMISE_NUDGES - 1} nudges`,
+			`Ralph loop failed at iteration ${state.iteration}: assistant did not emit <promise>NEXT</promise>, <promise>COMPLETE</promise>, or <promise>STOP</promise> within ${MAX_PROMISE_NUDGES} nudges`,
 			"error",
 		);
 		finalizeLoop(ctx, ctx.cwd, "error", state.error_count);
 		return;
 	}
 
-	const isFinalWarningNudge = _promiseNudges === MAX_PROMISE_NUDGES - 1;
+	const isFinalWarningNudge = _promiseNudges === MAX_PROMISE_NUDGES;
 	showLoopNotice(
 		ctx,
 		isFinalWarningNudge
-			? `Iteration ${state.iteration}/${state.max_iterations} still missing control promise; sending final warning nudge (${_promiseNudges}/${MAX_PROMISE_NUDGES - 1})`
-			: `Iteration ${state.iteration}/${state.max_iterations} missing control promise; nudging continue (${_promiseNudges}/${MAX_PROMISE_NUDGES - 1})`,
+			? `Iteration ${state.iteration}/${state.max_iterations} still missing control promise; sending final warning nudge (${_promiseNudges}/${MAX_PROMISE_NUDGES})`
+			: `Iteration ${state.iteration}/${state.max_iterations} missing control promise; nudging continue (${_promiseNudges}/${MAX_PROMISE_NUDGES})`,
 		"warning",
 	);
 	sendWhenIdle(
@@ -551,10 +754,11 @@ export function handleLoopAgentEnd(
 
 	if (stopReason === "error") {
 		handleProviderWait(
+			pi,
 			ctx,
 			state,
 			`Provider error at Ralph iteration ${state.iteration}; waiting for Pi's retry handling before deciding the loop failed.`,
-			`Ralph loop stopped at iteration ${state.iteration}: provider error persisted after waiting for Pi retry handling. Resume after inspecting the partial work.`,
+			`Provider/agent error persisted at Ralph iteration ${state.iteration}; sending recovery continue shortly.`,
 		);
 		return;
 	}
@@ -569,14 +773,16 @@ export function handleLoopAgentEnd(
 
 	if (!stopReason || !TERMINAL_STOP_REASONS.has(stopReason)) {
 		handleProviderWait(
+			pi,
 			ctx,
 			state,
 			`Agent ended without terminal stopReason at Ralph iteration ${state.iteration}; waiting for Pi's retry handling before deciding the loop failed.`,
-			`Ralph loop stopped at iteration ${state.iteration}: agent kept ending without a terminal stopReason after waiting for Pi retry handling. Resume after inspecting the partial work.`,
+			`Provider/agent error persisted at Ralph iteration ${state.iteration}; sending recovery continue shortly.`,
 		);
 		return;
 	}
 
+	resetProviderRecoveryChain();
 	updateLoopModelStateFromContext(pi, ctx);
 	const controlPromise = extractControlPromise(assistant);
 	if (controlPromise === "COMPLETE") {
@@ -640,6 +846,7 @@ export async function runLoop(
 		bundle_items_snapshot: null,
 		git_head: null,
 		bundle_rejection_count: 0,
+		provider_recovery_fresh_fallback_used: false,
 		limit_reminders: null,
 	};
 

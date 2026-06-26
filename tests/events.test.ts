@@ -47,6 +47,7 @@ function makeEventsState(
 		bundle_items_snapshot: null,
 		git_head: null,
 		bundle_rejection_count: 0,
+		provider_recovery_fresh_fallback_used: false,
 		limit_reminders: null,
 	};
 	return { ...baseState, ...overrides };
@@ -102,6 +103,12 @@ function createEventsHarness() {
 		ctx,
 	};
 }
+
+test("registers input handler for human recovery cancellation", () => {
+	const h = createEventsHarness();
+
+	assert.equal(typeof h.handlers.get("input"), "function");
+});
 
 test("session_before_switch blocks resume while loop is running", async () => {
 	const h = createEventsHarness();

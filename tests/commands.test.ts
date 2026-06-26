@@ -63,6 +63,7 @@ function makeCommandsState(
 		bundle_items_snapshot: null,
 		git_head: null,
 		bundle_rejection_count: 0,
+		provider_recovery_fresh_fallback_used: false,
 		limit_reminders: null,
 	};
 	return { ...baseState, ...overrides };

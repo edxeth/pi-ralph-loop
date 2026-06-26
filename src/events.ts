@@ -5,7 +5,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { finalizeLoop } from "./loop/finalize.js";
 import { isLoopOwnerActive } from "./loop/ownership.js";
-import { handleLoopAgentEnd, handleLoopTurnEnd } from "./loop-engine.js";
+import {
+	handleLoopAgentEnd,
+	handleLoopInput,
+	handleLoopTurnEnd,
+} from "./loop-engine.js";
 import {
 	updateLoopModelStateFromContext,
 	updateLoopSelectedModel,
@@ -176,6 +180,7 @@ export function registerEventHandlers(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", (_event, ctx) =>
 		updateLoopModelStateFromContext(pi, ctx),
 	);
+	pi.on("input", (event, ctx) => handleLoopInput(event, ctx));
 	pi.on("turn_end", (event, ctx) => handleLoopTurnEnd(pi, ctx, event));
 	pi.on("agent_end", (event, ctx) => {
 		const messages = (

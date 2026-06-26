@@ -229,7 +229,7 @@ pi
 
 For example, if an installed tool is useful in normal Pi sessions but unsafe for unattended Ralph runs, put that tool's exact name in `RALPH_BLOCKED_TOOLS`. Ralph only blocks the configured tool while `.ralph/loop.md` says a loop is running in the current workspace. Normal Pi usage outside a running Ralph loop is unaffected.
 
-Ralph waits through provider retry handling and missing terminal stop reasons instead of advancing early. User aborts stop the loop before the next iteration starts. Stale state resets on startup.
+Ralph waits through Pi's provider retry handling and malformed terminal stops before it acts. If Pi still cannot produce a normal turn, Ralph sends up to five same-iteration `continue` nudges, then starts one fresh fallback session for that iteration. If the fallback also exhausts recovery, Ralph stops as a resumable error. User input cancels pending recovery countdowns. User aborts stop the loop before the next iteration starts. Stale state resets on startup.
 
 If you launch Pi through RPC, an API wrapper, or a subprocess, keep that Pi process and its stdin open for the whole Ralph run. A one-shot wrapper that sends `/ralph-loop` and then closes stdin tells Pi to quit; Ralph may accept `<promise>NEXT</promise>` but the host can exit before the fresh-session handoff runs. If this happens, run `/ralph-resume` from a long-lived Pi session.
 

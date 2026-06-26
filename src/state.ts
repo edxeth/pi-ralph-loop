@@ -59,6 +59,7 @@ const STATE_SCHEMA = [
 	["bundle_items_snapshot", "stringNull"],
 	["git_head", "stringNull"],
 	["bundle_rejection_count", "int"],
+	["provider_recovery_fresh_fallback_used", "bool"],
 	["limit_reminders", "stringNull"],
 ] as const satisfies ReadonlyArray<readonly [keyof RalphLoopState, FieldKind]>;
 

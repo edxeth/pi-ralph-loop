@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
 
 import type {
 	ExtensionAPI,
@@ -15,7 +15,9 @@ import { setLoopApi } from "../src/loop/api-context.ts";
 import {
 	continueLoop,
 	handleLoopAgentEnd,
+	handleLoopInput,
 	handleLoopTurnEnd,
+	PROVIDER_ERROR_MAX_WAIT_MS,
 	runLoop,
 } from "../src/loop-engine.ts";
 import { readState, writeState } from "../src/state.ts";
@@ -105,6 +107,7 @@ function makeBaseState(
 		bundle_items_snapshot: null,
 		git_head: null,
 		bundle_rejection_count: 0,
+		provider_recovery_fresh_fallback_used: false,
 		limit_reminders: null,
 	};
 	return { ...baseState, ...overrides };
@@ -465,6 +468,29 @@ test("bundle NEXT accepts exactly one completed item", async () => {
 	assert.equal(state?.transitioning, true);
 	await new Promise((r) => setTimeout(r, 600));
 	assert.equal(h.newSessionCalls, 1);
+});
+
+test("provider recovery fresh fallback preserves the original bundle snapshot", async () => {
+	mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+	try {
+		const h = createHarness();
+		writeBundleItems(h.cwd, [false]);
+		h.writeState(makeBaseState({ transitioning: false, bundle_mode: true }));
+		await continueLoop(h.pi, h.ctx);
+
+		// The first session made valid item progress before provider failures
+		// forced Ralph into a same-iteration fresh fallback.
+		writeBundleItems(h.cwd, [true]);
+		await exhaustProviderRecoveryToFreshFallback(h);
+
+		h.simulateAgentEnd({ text: "Iteration 1\n<promise>NEXT</promise>" });
+
+		assert.equal(h.readState()?.iteration, 2);
+		assert.equal(h.readState()?.transitioning, true);
+		assert.doesNotMatch(h.notifications.at(-1)?.message ?? "", /observed 0/);
+	} finally {
+		mock.timers.reset();
+	}
 });
 
 test("bundle NEXT survives agent restoring stale loop state", async () => {
@@ -872,6 +898,276 @@ test("agent_end with provider error waits without injecting continue", () => {
 	assert.deepEqual(h.sentMessages, []);
 });
 
+test("provider error sends a recovery nudge after Pi retry wait and countdown", () => {
+	mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+	try {
+		const h = createHarness();
+		h.writeState(makeBaseState({ transitioning: false }));
+
+		h.simulateAgentEnd({ stopReason: "error", text: "partial" });
+		mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS);
+		assert.equal(h.readState()?.running, true);
+		assert.equal(h.readState()?.stop_reason, null);
+		assert.deepEqual(h.sentMessages, []);
+
+		mock.timers.tick(60_000);
+		assert.equal(h.readState()?.running, true);
+		assert.equal(h.readState()?.stop_reason, null);
+		assert.equal(h.sentMessages.at(-1), "continue");
+	} finally {
+		mock.timers.reset();
+	}
+});
+
+test("provider recovery nudge waits for idle before sending", () => {
+	mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+	try {
+		const h = createHarness();
+		h.writeState(makeBaseState({ transitioning: false }));
+		h.setIdle(false);
+
+		h.simulateAgentEnd({ stopReason: "error", text: "partial" });
+		mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS);
+		mock.timers.tick(60_000);
+		assert.deepEqual(h.sentMessages, []);
+
+		h.setIdle(true);
+		mock.timers.tick(250);
+
+		assert.equal(h.sentMessages.at(-1), "continue");
+	} finally {
+		mock.timers.reset();
+	}
+});
+
+test("recovery turn cancels provider nudge already waiting for idle", () => {
+	mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+	try {
+		const h = createHarness();
+		h.writeState(makeBaseState({ transitioning: false }));
+		h.setIdle(false);
+
+		h.simulateAgentEnd({ stopReason: "error", text: "partial" });
+		mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS);
+		mock.timers.tick(60_000);
+		assert.deepEqual(h.sentMessages, []);
+
+		handleLoopTurnEnd(h.pi, h.ctx, {
+			message: { role: "assistant", content: [{ type: "text", text: "working" }] },
+		});
+		h.setIdle(true);
+		mock.timers.tick(250);
+
+		assert.deepEqual(h.sentMessages, []);
+	} finally {
+		mock.timers.reset();
+	}
+});
+
+test("human input cancels provider nudge already waiting for idle", () => {
+	mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+	try {
+		const h = createHarness();
+		h.writeState(makeBaseState({ transitioning: false }));
+		h.setIdle(false);
+
+		h.simulateAgentEnd({ stopReason: "error", text: "partial" });
+		mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS);
+		mock.timers.tick(60_000);
+		assert.deepEqual(h.sentMessages, []);
+
+		handleLoopInput({ source: "interactive" }, h.ctx);
+		h.setIdle(true);
+		mock.timers.tick(250);
+
+		assert.deepEqual(h.sentMessages, []);
+	} finally {
+		mock.timers.reset();
+	}
+});
+
+async function exhaustProviderRecoveryToFreshFallback(h: Harness): Promise<void> {
+	for (let i = 1; i <= 5; i++) {
+		h.simulateAgentEnd({ stopReason: "error", text: `provider failed ${i}` });
+		mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS);
+		mock.timers.tick(60_000);
+	}
+
+	h.simulateAgentEnd({ stopReason: "error", text: "provider failed after final nudge" });
+	mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS);
+	mock.timers.tick(300_000);
+	await Promise.resolve();
+	mock.timers.tick(0);
+	await Promise.resolve();
+}
+
+test("provider recovery countdown updates the above-editor notice", () => {
+	mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+	try {
+		const h = createHarness();
+		h.writeState(makeBaseState({ transitioning: false }));
+
+		h.simulateAgentEnd({ stopReason: "error", text: "partial" });
+		mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS);
+		const baseline = h.widgets.length;
+
+		mock.timers.tick(1_000);
+		assert.ok(
+			h.widgets.length > baseline,
+			"countdown should update the above-editor widget while waiting",
+		);
+	} finally {
+		mock.timers.reset();
+	}
+});
+
+test("recovery turn cancels a pending provider recovery nudge", () => {
+	mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+	try {
+		const h = createHarness();
+		h.writeState(makeBaseState({ transitioning: false }));
+
+		h.simulateAgentEnd({ stopReason: "error", text: "partial" });
+		mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS);
+		handleLoopTurnEnd(h.pi, h.ctx, {
+			message: { role: "assistant", content: [{ type: "text", text: "working" }] },
+		});
+		mock.timers.tick(60_000);
+
+		assert.deepEqual(h.sentMessages, []);
+	} finally {
+		mock.timers.reset();
+	}
+});
+
+test("human input cancels a pending provider recovery nudge", () => {
+	mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+	try {
+		const h = createHarness();
+		h.writeState(makeBaseState({ transitioning: false }));
+
+		h.simulateAgentEnd({ stopReason: "error", text: "partial" });
+		mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS);
+		handleLoopInput({ source: "interactive" }, h.ctx);
+		mock.timers.tick(60_000);
+
+		assert.deepEqual(h.sentMessages, []);
+	} finally {
+		mock.timers.reset();
+	}
+});
+
+test("extension input does not cancel Ralph's own provider recovery nudge", () => {
+	mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+	try {
+		const h = createHarness();
+		h.writeState(makeBaseState({ transitioning: false }));
+
+		h.simulateAgentEnd({ stopReason: "error", text: "partial" });
+		mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS);
+		handleLoopInput({ source: "extension" }, h.ctx);
+		mock.timers.tick(60_000);
+
+		assert.equal(h.sentMessages.at(-1), "continue");
+	} finally {
+		mock.timers.reset();
+	}
+});
+
+test("non-error assistant turn resets the provider recovery nudge chain", () => {
+	mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+	try {
+		const h = createHarness();
+		h.writeState(makeBaseState({ transitioning: false }));
+
+		h.simulateAgentEnd({ stopReason: "error", text: "first provider failure" });
+		mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS);
+		mock.timers.tick(60_000);
+		assert.equal(h.sentMessages.at(-1), "continue");
+
+		h.sentMessages.length = 0;
+		h.simulateAgentEnd({ text: "recovered, but forgot the promise" });
+
+		for (let i = 1; i <= 5; i++) {
+			h.simulateAgentEnd({ stopReason: "error", text: `provider failed again ${i}` });
+			mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS);
+			mock.timers.tick(60_000);
+		}
+
+		assert.equal(h.newSessionCalls, 0);
+		assert.equal(
+			h.sentMessages.filter((message) => message.startsWith("continue")).length,
+			6,
+		);
+	} finally {
+		mock.timers.reset();
+	}
+});
+
+test("provider recovery sends five actual nudges before one fresh fallback", async () => {
+	mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+	try {
+		const h = createHarness();
+		h.writeState(makeBaseState({ transitioning: false }));
+		await continueLoop(h.pi, h.ctx);
+		h.sentMessages.length = 0;
+
+		for (let i = 1; i <= 5; i++) {
+			h.simulateAgentEnd({ stopReason: "error", text: `provider failed ${i}` });
+			mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS);
+			mock.timers.tick(60_000);
+		}
+
+		assert.equal(
+			h.sentMessages.filter((message) => message.startsWith("continue")).length,
+			5,
+		);
+		assert.match(h.sentMessages.at(-1) ?? "", /promise/i);
+		assert.equal(h.newSessionCalls, 0);
+
+		h.simulateAgentEnd({ stopReason: "error", text: "provider failed after final nudge" });
+		mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS);
+		mock.timers.tick(300_000);
+		await Promise.resolve();
+		mock.timers.tick(0);
+		await Promise.resolve();
+
+		assert.equal(h.newSessionCalls, 1);
+		assert.equal(h.readState()?.provider_recovery_fresh_fallback_used, true);
+		assert.equal(h.readState()?.transitioning, false);
+		assert.equal(h.sentMessages.at(-1), "task");
+	} finally {
+		mock.timers.reset();
+	}
+});
+
+test("provider recovery fresh fallback is capped at one per iteration", async () => {
+	mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+	try {
+		const h = createHarness();
+		h.writeState(makeBaseState({ transitioning: false }));
+		await continueLoop(h.pi, h.ctx);
+		h.sentMessages.length = 0;
+		await exhaustProviderRecoveryToFreshFallback(h);
+		assert.equal(h.newSessionCalls, 1);
+		h.sentMessages.length = 0;
+
+		for (let i = 1; i <= 5; i++) {
+			h.simulateAgentEnd({ stopReason: "error", text: `fresh fallback failed ${i}` });
+			mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS);
+			mock.timers.tick(60_000);
+		}
+		h.simulateAgentEnd({ stopReason: "error", text: "fresh fallback failed after final nudge" });
+		mock.timers.tick(PROVIDER_ERROR_MAX_WAIT_MS);
+
+		assert.equal(h.newSessionCalls, 1);
+		assert.equal(h.readState()?.running, false);
+		assert.equal(h.readState()?.stop_reason, "error");
+	} finally {
+		mock.timers.reset();
+	}
+});
+
 test("agent_end without terminal stopReason waits without injecting continue", () => {
 	const h = createHarness();
 	h.writeState(makeBaseState({ transitioning: false }));
@@ -1023,17 +1319,22 @@ test("agent_end missing control promise queues continue nudge", async () => {
 	assert.equal(typeof h.widgets.at(-1)?.content, "function");
 });
 
-test("missing-promise chain fails on the fifth total no-promise reply", async () => {
+test("missing-promise chain sends five actual nudges before failing", async () => {
 	const h = createHarness();
 	h.writeState(makeBaseState({ transitioning: false }));
 	await continueLoop(h.pi, h.ctx);
+	h.sentMessages.length = 0;
 
-	for (let i = 0; i < 4; i++) {
-		h.simulateAgentEnd({ text: `Missing promise ${i + 1}` });
+	for (let i = 1; i <= 5; i++) {
+		h.simulateAgentEnd({ text: `Missing promise ${i}` });
 	}
 	assert.equal(h.readState()?.running, true);
+	assert.equal(
+		h.sentMessages.filter((message) => message.startsWith("continue")).length,
+		5,
+	);
 
-	h.simulateAgentEnd({ text: "Missing promise 5" });
+	h.simulateAgentEnd({ text: "Missing promise 6" });
 
 	assert.equal(h.readState()?.running, false);
 	assert.equal(h.readState()?.stop_reason, "error");
@@ -1049,7 +1350,7 @@ test("provider error resets the missing-promise nudge chain", async () => {
 		h.simulateAgentEnd({ text: `Missing promise ${i + 1}` });
 	}
 	assert.equal(h.readState()?.running, true);
-	assert.equal(h.sentMessages.filter((message) => message === "continue").length, 3);
+	assert.equal(h.sentMessages.filter((message) => message === "continue").length, 4);
 
 	h.simulateAgentEnd({ stopReason: "error", text: "provider failed" });
 	assert.equal(h.readState()?.running, true);
@@ -1205,7 +1506,7 @@ test("bundle rejection prompt waits for idle then triggers correction", async ()
 	assert.equal(h.sentMessageOptions.at(-1), undefined);
 });
 
-test("bundle rejections stop after repeated invariant failures", async () => {
+test("bundle rejections send five actual corrections before failing", async () => {
 	const h = createHarness();
 	writeBundleItems(h.cwd, [false]);
 	h.writeState(
@@ -1219,11 +1520,16 @@ test("bundle rejections stop after repeated invariant failures", async () => {
 	await continueLoop(h.pi, h.ctx);
 	h.simulateAgentEnd({ text: "Still not done\n<promise>NEXT</promise>" });
 
+	assert.equal(h.readState()?.running, true);
+	assert.equal(h.readState()?.bundle_rejection_count, 5);
+	assert.match(h.sentMessages.at(-1) ?? "", /^Ralph rejected <promise>NEXT<\/promise>/);
+
+	h.simulateAgentEnd({ text: "Still not done again\n<promise>NEXT</promise>" });
+
 	const state = h.readState();
 	assert.equal(state?.running, false);
 	assert.equal(state?.stop_reason, "error");
-	assert.equal(state?.bundle_rejection_count, 5);
-	assert.equal(h.sentMessages.length, 1);
+	assert.equal(state?.bundle_rejection_count, 6);
 });
 
 test("bundle rejection count resets after accepted NEXT", async () => {
