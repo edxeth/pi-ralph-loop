@@ -8,6 +8,10 @@ This extension gives Ralph a native Pi runtime. It also ships `ralph-plan-writer
 
 Use the bundled agent skill when you want a Ralph planner out of the box. Use plain `/ralph-loop` when you want to bring your own prompt.
 
+## Acknowledgements
+
+Special thanks to [@FasalZein](https://github.com/FasalZein) and [@isthatyousaf](https://github.com/isthatyousaf) — for their contributions, ideas, and for providing access to frontier models like GPT and Claude, which made it possible to experiment and build this extension. Good guys, I owe them a lot!
+
 ## 🌐 **Join the Community**
 
 > [!NOTE]
