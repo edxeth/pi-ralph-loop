@@ -419,11 +419,38 @@ test("ralph-resume in same session does not re-seed when work is in progress", a
 	await h.commands.get("ralph-resume")?.handler("", h.ctx);
 
 	// No promise yet and the session already has turns: nudge, do not re-seed.
-	assert.deepEqual(h.sentMessages, ["continue"]);
+	assert.equal(h.sentMessages.length, 1);
+	assert.match(h.sentMessages[0], /without a control tag/);
+	assert.doesNotMatch(h.sentMessages[0], /<promise>STOP<\/promise>/);
 	assert.equal(h.getNewSessionCount(), 0);
 	const state = readState(h.cwd);
 	assert.equal(state?.running, true);
 	assert.equal(state?.iteration, 2);
+});
+
+test("ralph-resume in same session re-parks on a re-emitted WAIT", async () => {
+	const h = createCommandsHarness();
+	writeState(
+		h.cwd,
+		makeCommandsState({
+			running: false,
+			stop_reason: "user_cancelled",
+			session_id: "session-1",
+			iteration: 2,
+			max_iterations: 5,
+		}),
+		"the ralph prompt",
+	);
+	h.pushAssistant("Waiting for reviewer.\n<promise>WAIT</promise>");
+
+	await h.commands.get("ralph-resume")?.handler("", h.ctx);
+
+	const state = readState(h.cwd);
+	assert.equal(state?.running, true);
+	assert.equal(state?.iteration, 2);
+	assert.equal(state?.transitioning, false);
+	assert.deepEqual(h.sentMessages, []);
+	assert.equal(h.getNewSessionCount(), 0);
 });
 
 test("ralph-resume in same session advances iteration on a re-emitted NEXT", async () => {

@@ -69,6 +69,25 @@ async function replyFor(context: Context): Promise<string> {
 	if (latest.startsWith("continue")) {
 		return "Still working.";
 	}
+	if (latest.includes("without a control tag")) {
+		return "Still working.";
+	}
+	if (latest.includes("WAIT timed out")) {
+		return "Timed-out wait resolved.\n<promise>NEXT</promise>";
+	}
+	if (latest.includes("async result arrived before timeout")) {
+		return "Async result arrived.\n<promise>NEXT</promise>";
+	}
+	if (latest.includes("pre-timeout wait smoke")) {
+		return currentIteration() === 1
+			? "Waiting for async work.\n<promise>WAIT</promise>"
+			: "Pre-timeout wait smoke complete.\n<promise>COMPLETE</promise>";
+	}
+	if (latest.includes("wait smoke")) {
+		return currentIteration() === 1
+			? "Waiting for async work.\n<promise>WAIT</promise>"
+			: "Wait smoke complete.\n<promise>COMPLETE</promise>";
+	}
 	if (latest.includes("Ralph rejected")) {
 		return "Blocked after rejection.\n<promise>STOP</promise>";
 	}

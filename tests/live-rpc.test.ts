@@ -644,9 +644,9 @@ test("live pi RPC: provider error resets the missing-promise nudge chain", {
 		const session = h.stateField(state, "last_session_file");
 		const userMessages = h.userTexts(session);
 		assert.equal(
-			userMessages.filter((message) => message === "continue").length,
+			userMessages.filter((message) => message.includes("without a control tag")).length,
 			5,
-			"Ralph should send a fresh continue nudge after provider recovery",
+			"Ralph should send a fresh control-tag nudge after provider recovery",
 		);
 	} finally {
 		await h.stop();
@@ -656,7 +656,7 @@ test("live pi RPC: provider error resets the missing-promise nudge chain", {
 // ── /ralph-resume same-session routing (reuse path) ─────────────────────
 // These exercise the three reuse-path conditions through the real runtime:
 // the seed prompt must be delivered exactly once per session, so resume must
-// either route an already-emitted promise or nudge "continue" — never re-seed.
+// either route an already-emitted promise or send a control-tag nudge without re-seeding.
 
 test("live pi RPC: resume re-finalizes an already-emitted COMPLETE without re-seeding", {
 	skip: !SHOULD_RUN,
@@ -720,15 +720,101 @@ test("live pi RPC: resume advances on an already-emitted NEXT and opens a fresh 
 	}
 });
 
-test("live pi RPC: resume nudges 'continue' when no promise was emitted yet", {
+test("live pi RPC: WAIT parks, times out, then accepts NEXT", {
+	skip: !SHOULD_RUN,
+}, async () => {
+	const fakeProvider = resolve(
+		process.cwd(),
+		"tests",
+		"fixtures",
+		"fake-scripted-provider.ts",
+	);
+	const h = createRpcHarness({
+		extraExtensions: [fakeProvider],
+		model: "ralph-fake/scripted",
+		env: {
+			RALPH_FAKE_API_KEY: "unused-but-present",
+			RALPH_TEST_WAIT_PARK_TIMEOUT_MS: "1000",
+		},
+	});
+	try {
+		const sessionsBefore = h.listSessions().length;
+		h.sendPrompt('/ralph-loop "wait smoke" --max-iterations=3');
+		const state = await h.waitForFinalState(/stop_reason:\s*"complete"/, 120_000);
+
+		assert.match(state, /iteration:\s*2/);
+		assert.ok(
+			h.listSessions().length >= sessionsBefore + 2,
+			"WAIT timeout recovery should accept NEXT and open the next iteration",
+		);
+		const userMessages = h.listSessions().flatMap((session) => h.userTexts(session));
+		assert.ok(
+			userMessages.some((message) => message.includes("WAIT timed out")),
+			"WAIT timeout should send a bounded recovery prompt",
+		);
+	} finally {
+		await h.stop();
+	}
+});
+
+test("live pi RPC: WAIT is superseded when a result arrives before timeout", {
+	skip: !SHOULD_RUN,
+}, async () => {
+	const fakeProvider = resolve(
+		process.cwd(),
+		"tests",
+		"fixtures",
+		"fake-scripted-provider.ts",
+	);
+	const h = createRpcHarness({
+		extraExtensions: [fakeProvider],
+		model: "ralph-fake/scripted",
+		env: {
+			RALPH_FAKE_API_KEY: "unused-but-present",
+			RALPH_TEST_WAIT_PARK_TIMEOUT_MS: "10000",
+		},
+	});
+	try {
+		const sessionsBefore = h.listSessions().length;
+		h.sendPrompt('/ralph-loop "pre-timeout wait smoke" --max-iterations=3');
+		const waiting = await h.waitForState(
+			/running:\s*true[\s\S]*iteration:\s*1[\s\S]*transitioning:\s*false/,
+			60_000,
+		);
+		const session = h.stateField(waiting, "last_session_file");
+		assert.ok(session);
+
+		// Simulate a future async result arriving before the WAIT timeout. This
+		// should cancel the parked timeout path; no `WAIT timed out` prompt should
+		// be injected into the session.
+		h.sendPrompt("async result arrived before timeout");
+		const state = await h.waitForFinalState(/stop_reason:\s*"complete"/, 120_000);
+		const userMessages = h.listSessions().flatMap((file) => h.userTexts(file));
+
+		assert.match(state, /iteration:\s*2/);
+		assert.ok(
+			h.listSessions().length >= sessionsBefore + 2,
+			"pre-timeout result should accept NEXT and open the next iteration",
+		);
+		assert.equal(
+			userMessages.some((message) => message.includes("WAIT timed out")),
+			false,
+			"WAIT timeout prompt must not send when the async result arrives first",
+		);
+	} finally {
+		await h.stop();
+	}
+});
+
+test("live pi RPC: resume sends a control-tag nudge when no promise was emitted yet", {
 	skip: !SHOULD_RUN,
 }, async () => {
 	const h = createScriptedHarness();
 	try {
-		// A prompt that never emits a promise gets nudged with "continue". We let
-		// exactly one nudge land (proving a no-promise turn happened), then stop the
-		// loop cleanly so the saved session ends mid-work with no promise on its
-		// last turn -- the State B precondition, without burning the 5-nudge budget.
+		// A prompt that never emits a promise gets a structured control-tag nudge.
+		// We let exactly one nudge land (proving a no-promise turn happened), then
+		// stop the loop cleanly so the saved session ends mid-work with no promise on
+		// its last turn -- the State B precondition, without burning the 5-nudge budget.
 		h.sendPrompt(
 			'/ralph-loop "Reply with exactly one short sentence about the weather. Do not output any promise tag." --max-iterations=1',
 		);
@@ -737,7 +823,7 @@ test("live pi RPC: resume nudges 'continue' when no promise was emitted yet", {
 		);
 		const session = h.stateField(started, "last_session_file");
 		assert.ok(session);
-		// Wait until at least one "continue" nudge has been appended (a no-promise
+		// Wait until at least one control-tag nudge has been appended (a no-promise
 		// turn was observed), then request a clean stop.
 		await h.waitForUserTextCount(session, 2, 120_000);
 		h.sendPrompt("/ralph-stop");
@@ -749,11 +835,12 @@ test("live pi RPC: resume nudges 'continue' when no promise was emitted yet", {
 		h.sendPrompt("/ralph-resume");
 		const after = await h.waitForUserTextCount(session, before.length + 1);
 
-		assert.equal(
+		assert.match(
 			after[before.length],
-			"continue",
-			"resume must nudge continue, not re-seed the prompt",
+			/without a control tag/,
+			"resume must send a control-tag nudge, not re-seed the prompt",
 		);
+		assert.doesNotMatch(after[before.length], /<promise>STOP<\/promise>/);
 		assert.equal(
 			after.filter((t) => t.includes("about the weather")).length,
 			seedCount,

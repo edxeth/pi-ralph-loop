@@ -1,4 +1,4 @@
-export type ControlPromise = "NEXT" | "COMPLETE" | "STOP";
+export type ControlPromise = "NEXT" | "COMPLETE" | "STOP" | "WAIT";
 
 export function extractControlPromise(
 	msg: { content?: unknown } | null,
@@ -19,6 +19,6 @@ export function extractControlPromise(
 	if (lines.length === 0) return null;
 
 	const finalLine = lines[lines.length - 1].replace(/^`+|`+$/g, "");
-	const match = finalLine.match(/<promise>(NEXT|COMPLETE|STOP)<\/promise>$/);
+	const match = finalLine.match(/<promise>(NEXT|COMPLETE|STOP|WAIT)<\/promise>$/);
 	return match ? (match[1] as ControlPromise) : null;
 }

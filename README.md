@@ -111,11 +111,12 @@ Ralph reads the last non-empty line of the assistant response.
 
 | Tag | Meaning |
 | --- | --- |
+| `<promise>WAIT</promise>` | This iteration is intentionally waiting for an async helper, background command, review, process alert, or future tool result. Stay in the same session. |
 | `<promise>NEXT</promise>` | This iteration finished one unit of work. Start the next fresh session. |
 | `<promise>COMPLETE</promise>` | The whole loop is done. Stop successfully. |
 | `<promise>STOP</promise>` | Stop the loop without calling it complete. |
 
-If the agent omits a tag, Ralph nudges it to continue. After repeated misses, Ralph stops with an error instead of looping forever.
+If the agent omits a tag, Ralph sends a control-tag prompt. After repeated misses, Ralph stops with an error instead of looping forever. `WAIT` has its own timeout. If no async result arrives before that timeout, Ralph asks the agent to re-check the iteration and choose `WAIT`, `NEXT`, or `COMPLETE`. Runtime support for `STOP` remains available, but Ralph does not include it in default correction prompts.
 
 ## Bundle mode, if you write it yourself
 
@@ -165,7 +166,7 @@ Useful `runtime_contract` fields:
 | `require_commit` | When `true`, `NEXT` and `COMPLETE` require git HEAD to change during the iteration. Omit or set `false` when commits are not required. |
 | `source_docs` + `require_clean_source_docs` | Optional file-protection gate. Omit unless you want Ralph to reject edits to listed files. |
 
-`NEXT` means one item passed and the required checks passed, meaning it's time to move on to the next loop iteration. `COMPLETE` means every item passed and the required checks passed, hence the task and all its items are completed, no more work left to do. Rejected promises stay in the same session with a corrective prompt.
+`WAIT` means the selected item is still in progress because the agent expects an async result to arrive later. `NEXT` means one item passed and the required checks passed, so Ralph can move to the next loop iteration. `COMPLETE` means every item passed and all required checks passed. Rejected promises stay in the same session with a corrective prompt.
 
 ## Commands
 
@@ -177,7 +178,7 @@ Start a loop. Default max iterations: `100`.
 
 Resume the saved loop from `.ralph/loop.md`. Use `--force` to resume a completed run.
 
-Resume adapts to where it runs. From the same Pi session that owns the saved iteration, it does not re-send the prompt (the agent already has it). Instead it reads the last assistant turn: if a promise was already emitted, it acts on it (`COMPLETE`/`STOP` end the loop, `NEXT` advances to the next fresh iteration); if no promise was emitted yet, it nudges `continue` so the agent finishes the in-progress unit. From any other session, it restarts the saved iteration in a fresh session.
+Resume adapts to where it runs. From the same Pi session that owns the saved iteration, it does not re-send the prompt. Instead it reads the last assistant turn: `COMPLETE` and `STOP` end the loop, `NEXT` advances to the next fresh iteration, and `WAIT` keeps the same iteration parked. If no promise was emitted yet, Ralph sends the same control-tag prompt it uses for missing promises. From any other session, it restarts the saved iteration in a fresh session.
 
 ### `/ralph-restart`
 
@@ -229,11 +230,11 @@ pi
 
 For example, if an installed tool is useful in normal Pi sessions but unsafe for unattended Ralph runs, put that tool's exact name in `RALPH_BLOCKED_TOOLS`. Ralph only blocks the configured tool while `.ralph/loop.md` says a loop is running in the current workspace. Normal Pi usage outside a running Ralph loop is unaffected.
 
-Ralph waits through Pi's provider retry handling and malformed terminal stops before it acts. If Pi still cannot produce a normal turn, Ralph sends up to five same-iteration `continue` nudges, then starts one fresh fallback session for that iteration. If the fallback also exhausts recovery, Ralph stops as a resumable error. User input cancels pending recovery countdowns. User aborts stop the loop before the next iteration starts. Stale state resets on startup.
+Ralph waits through Pi's provider retry handling and malformed terminal stops before it acts. If Pi still cannot produce a normal turn, Ralph sends up to five same-iteration recovery nudges, then starts one fresh fallback session for that iteration. If the fallback also exhausts recovery, Ralph stops as a resumable error. Missing-promise turns receive a control-tag prompt instead of a bare `continue`. User input cancels pending recovery countdowns. User aborts stop the loop before the next iteration starts. Stale state resets on startup.
 
 If you launch Pi through RPC, an API wrapper, or a subprocess, keep that Pi process and its stdin open for the whole Ralph run. A one-shot wrapper that sends `/ralph-loop` and then closes stdin tells Pi to quit; Ralph may accept `<promise>NEXT</promise>` but the host can exit before the fresh-session handoff runs. If this happens, run `/ralph-resume` from a long-lived Pi session.
 
-When a running iteration reaches 75%, 80%, and 85% of the active model context window, Ralph sends a hidden `ralph_limit` Pi custom message reminding the agent to preserve the original instructions and use the existing `NEXT` or `COMPLETE` promise contract when appropriate. Set `RALPH_LIMIT_REMINDERS_DISABLED=1` to opt out.
+When a running iteration reaches 75%, 80%, and 85% of the active model context window, Ralph sends a hidden `ralph_limit` Pi custom message reminding the agent to preserve the original instructions and use the existing `WAIT`, `NEXT`, or `COMPLETE` promise contract when appropriate. Set `RALPH_LIMIT_REMINDERS_DISABLED=1` to opt out.
 
 ## Development
 

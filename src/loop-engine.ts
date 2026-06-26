@@ -51,17 +51,43 @@ const TEST_PROVIDER_RECOVERY_NUDGE_DELAY_ENV =
 	"RALPH_TEST_PROVIDER_RECOVERY_NUDGE_DELAY_MS";
 const TEST_PROVIDER_RECOVERY_FALLBACK_DELAY_ENV =
 	"RALPH_TEST_PROVIDER_RECOVERY_FALLBACK_DELAY_MS";
+const TEST_WAIT_PARK_TIMEOUT_ENV = "RALPH_TEST_WAIT_PARK_TIMEOUT_MS";
 const FINAL_PROVIDER_RECOVERY_NUDGE = [
 	"continue",
 	"Reminder: continue this same Ralph iteration.",
 	"Finish the current unit and emit exactly one promise tag on the last non-empty line when appropriate.",
 ].join("\n");
-const FINAL_PROMISE_WARNING_NUDGE = [
-	"continue",
-	"Reminder: emit exactly one control tag on the LAST non-empty line when appropriate:",
-	"- <promise>NEXT</promise> only when this iteration unit is fully done",
-	"- <promise>COMPLETE</promise> only when ALL tasks are fully done",
+const MISSING_PROMISE_NUDGE = [
+	"You ended this Ralph turn without a control tag.",
+	"",
+	"End this same iteration with exactly one control tag on the last non-empty line:",
+	"",
+	"- <promise>WAIT</promise> if you are intentionally waiting for an async helper, background command, review, process alert, or future tool result before you can decide.",
+	"- <promise>NEXT</promise> if this iteration unit is fully done.",
+	"- <promise>COMPLETE</promise> if all items are fully done.",
 ].join("\n");
+const FINAL_PROMISE_WARNING_NUDGE = [
+	"FINAL WARNING: Ralph will stop with a resumable error after this if no valid control tag is emitted.",
+	"",
+	"Choose exactly one control tag for the current iteration:",
+	"",
+	"- <promise>WAIT</promise> if you are still waiting for async work.",
+	"- <promise>NEXT</promise> if this iteration unit is fully done.",
+	"- <promise>COMPLETE</promise> if all work is done.",
+	"",
+	"The last non-empty line must be exactly one valid promise tag.",
+].join("\n");
+const WAIT_TIMEOUT_NUDGE = [
+	"WAIT timed out before another async result arrived.",
+	"",
+	"Re-check the current iteration and end with exactly one control tag on the last non-empty line:",
+	"",
+	"- <promise>WAIT</promise> if you are still waiting for async work.",
+	"- <promise>NEXT</promise> if this iteration unit is fully done.",
+	"- <promise>COMPLETE</promise> if all work is done.",
+].join("\n");
+// WAIT park timeout in milliseconds: 30 minutes.
+export const WAIT_PARK_TIMEOUT_MS = 30 * 60 * 1000;
 // How long Ralph waits for Pi's auto-retry after a provider-error turn before
 // Ralph spends one of its own recovery nudges. Pi retries with exponential
 // backoff and is idle (not streaming) between attempts, so Ralph cannot use
@@ -211,6 +237,28 @@ function sendProviderRecoveryNudgeWhenIdle(
 
 	const timeout = setTimeout(
 		() => sendProviderRecoveryNudgeWhenIdle(pi, ctx, cwd, state, token),
+		250,
+	);
+	timeout.unref?.();
+}
+
+function sendWaitTimeoutNudgeWhenIdle(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	cwd: string,
+	state: RalphLoopState,
+	token: number,
+): void {
+	if (!isProviderWaitCurrent(token)) return;
+	if (!isRecoveryCountdownCurrent(cwd, state)) return;
+
+	if (ctx.isIdle()) {
+		pi.sendUserMessage(WAIT_TIMEOUT_NUDGE);
+		return;
+	}
+
+	const timeout = setTimeout(
+		() => sendWaitTimeoutNudgeWhenIdle(pi, ctx, cwd, state, token),
 		250,
 	);
 	timeout.unref?.();
@@ -429,6 +477,25 @@ function handleStopPromise(ctx: ExtensionContext, state: RalphLoopState): void {
 		"warning",
 	);
 	finalizeLoop(ctx, ctx.cwd, "manual_stop", state.error_count);
+}
+
+function handleWaitPromise(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	state: RalphLoopState,
+): void {
+	resetPromiseNudgeChain();
+	scheduleRecoveryCountdown(
+		ctx,
+		ctx.cwd,
+		state,
+		getDelayMs(TEST_WAIT_PARK_TIMEOUT_ENV, WAIT_PARK_TIMEOUT_MS),
+		(seconds) =>
+			`Ralph iteration ${state.iteration}/${state.max_iterations} is waiting for async work before finalizing this iteration. Sending a recovery prompt in ${seconds}s.`,
+		(_latest, token) => {
+			sendWaitTimeoutNudgeWhenIdle(pi, ctx, ctx.cwd, state, token);
+		},
+	);
 }
 
 function formatIterationSessionName(state: RalphLoopState): string {
@@ -683,7 +750,7 @@ function handleMissingPromise(
 	if (_promiseNudges > MAX_PROMISE_NUDGES) {
 		showLoopNotice(
 			ctx,
-			`Ralph loop failed at iteration ${state.iteration}: assistant did not emit <promise>NEXT</promise>, <promise>COMPLETE</promise>, or <promise>STOP</promise> within ${MAX_PROMISE_NUDGES} nudges`,
+			`Ralph loop failed at iteration ${state.iteration}: assistant did not emit <promise>WAIT</promise>, <promise>NEXT</promise>, or <promise>COMPLETE</promise> within ${MAX_PROMISE_NUDGES} nudges`,
 			"error",
 		);
 		finalizeLoop(ctx, ctx.cwd, "error", state.error_count);
@@ -695,13 +762,13 @@ function handleMissingPromise(
 		ctx,
 		isFinalWarningNudge
 			? `Iteration ${state.iteration}/${state.max_iterations} still missing control promise; sending final warning nudge (${_promiseNudges}/${MAX_PROMISE_NUDGES})`
-			: `Iteration ${state.iteration}/${state.max_iterations} missing control promise; nudging continue (${_promiseNudges}/${MAX_PROMISE_NUDGES})`,
+			: `Iteration ${state.iteration}/${state.max_iterations} missing control promise; sending control-tag nudge (${_promiseNudges}/${MAX_PROMISE_NUDGES})`,
 		"warning",
 	);
 	sendWhenIdle(
 		pi,
 		ctx,
-		isFinalWarningNudge ? FINAL_PROMISE_WARNING_NUDGE : "continue",
+		isFinalWarningNudge ? FINAL_PROMISE_WARNING_NUDGE : MISSING_PROMISE_NUDGE,
 	);
 }
 
@@ -797,6 +864,10 @@ export function handleLoopAgentEnd(
 		handleNextPromise(pi, ctx, state);
 		return;
 	}
+	if (controlPromise === "WAIT") {
+		handleWaitPromise(pi, ctx, state);
+		return;
+	}
 
 	handleMissingPromise(pi, ctx, state);
 }
@@ -882,8 +953,9 @@ export async function runLoop(
  * - COMPLETE / STOP already emitted  -> finalize the loop (route, don't nudge).
  * - NEXT already emitted             -> the unit is done; advance the iteration
  *                                        and open a fresh session.
+ * - WAIT already emitted             -> park the same iteration again.
  * - no promise but the session has
- *   prior turns                      -> nudge "continue" to finish the unit.
+ *   prior turns                      -> send a control-tag nudge.
  * - empty session (no prior turns)   -> seed the prompt once.
  *
  * Bundle promises validate against the pre-iteration snapshot preserved in
@@ -937,11 +1009,17 @@ export async function resumeCurrentSession(
 		handleNextPromise(pi, ctx, state);
 		return;
 	}
+	if (promise === "WAIT") {
+		setLoopStatus(ctx, state.iteration, state.max_iterations);
+		pi.setSessionName(formatIterationSessionName(state));
+		handleWaitPromise(pi, ctx, state);
+		return;
+	}
 
 	if (hasTurns) {
 		setLoopStatus(ctx, state.iteration, state.max_iterations);
 		pi.setSessionName(formatIterationSessionName(state));
-		sendWhenIdle(pi, ctx, "continue");
+		sendWhenIdle(pi, ctx, MISSING_PROMISE_NUDGE);
 		return;
 	}
 

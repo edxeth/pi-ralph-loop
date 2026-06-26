@@ -19,6 +19,7 @@ import {
 	handleLoopTurnEnd,
 	PROVIDER_ERROR_MAX_WAIT_MS,
 	runLoop,
+	WAIT_PARK_TIMEOUT_MS,
 } from "../src/loop-engine.ts";
 import { readState, writeState } from "../src/state.ts";
 import type { RalphLoopState } from "../src/types.ts";
@@ -545,7 +546,7 @@ test("bundle NEXT survives agent restoring stale loop state", async () => {
 	writeBundleItems(h.cwd, [true, true, true]);
 	h.simulateAgentEnd({ text: "Iteration 2 without promise" });
 	await new Promise((resolve) => setTimeout(resolve, 50));
-	assert.equal(h.sentMessages.at(-1), "continue");
+	assert.match(h.sentMessages.at(-1) ?? "", /without a control tag/);
 
 	h.simulateAgentEnd({ text: "Iteration 2\n<promise>NEXT</promise>" });
 
@@ -1095,9 +1096,11 @@ test("non-error assistant turn resets the provider recovery nudge chain", () => 
 		}
 
 		assert.equal(h.newSessionCalls, 0);
+		assert.equal(h.sentMessages.length, 6);
+		assert.match(h.sentMessages[0], /without a control tag/);
 		assert.equal(
 			h.sentMessages.filter((message) => message.startsWith("continue")).length,
-			6,
+			5,
 		);
 	} finally {
 		mock.timers.reset();
@@ -1305,14 +1308,140 @@ test("a toolCall turn after a provider error clears the warning but stays parked
 	assert.deepEqual(h.sentMessages, [], "must not nudge or reseed while suspended");
 });
 
-test("agent_end missing control promise queues continue nudge", async () => {
+test("agent_end with WAIT parks the iteration without nudging", async () => {
+	const h = createHarness();
+	h.writeState(makeBaseState({ transitioning: false }));
+
+	h.simulateAgentEnd({ text: "Waiting for reviewer.\n<promise>WAIT</promise>" });
+
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	const state = h.readState();
+	assert.equal(state?.running, true, "loop must stay running while parked");
+	assert.equal(state?.stop_reason, null, "WAIT must not finalize");
+	assert.equal(state?.iteration, 1, "WAIT must not advance the iteration");
+	assert.deepEqual(h.sentMessages, [], "WAIT must not send a recovery nudge immediately");
+	assert.equal(h.widgets.at(-1)?.key, "ralph-loop-notice");
+	assert.equal(h.widgets.at(-1)?.placement, "aboveEditor");
+});
+
+test("WAIT followed by NEXT advances the iteration", async () => {
+	const h = createHarness();
+	h.writeState(
+		makeBaseState({ iteration: 1, max_iterations: 3, transitioning: false }),
+	);
+	await continueLoop(h.pi, h.ctx);
+	h.sentMessages.length = 0;
+
+	h.simulateAgentEnd({ text: "Waiting for reviewer.\n<promise>WAIT</promise>" });
+	h.simulateAgentEnd({ text: "Reviewer arrived.\n<promise>NEXT</promise>" });
+
+	const state = h.readState();
+	assert.equal(state?.iteration, 2);
+	assert.equal(state?.transitioning, true);
+	assert.deepEqual(h.sentMessages, [], "WAIT must not leave a stale nudge behind");
+});
+
+test("WAIT timeout sends a bounded recovery prompt", () => {
+	mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+	try {
+		const h = createHarness();
+		h.writeState(makeBaseState({ transitioning: false }));
+
+		h.simulateAgentEnd({ text: "Waiting for reviewer.\n<promise>WAIT</promise>" });
+		mock.timers.tick(WAIT_PARK_TIMEOUT_MS);
+
+		const recoveryPrompt = h.sentMessages.at(-1) ?? "";
+		assert.match(recoveryPrompt, /WAIT timed out/);
+		assert.match(recoveryPrompt, /<promise>WAIT<\/promise>/);
+		assert.match(recoveryPrompt, /<promise>NEXT<\/promise>/);
+		assert.match(recoveryPrompt, /<promise>COMPLETE<\/promise>/);
+		assert.doesNotMatch(recoveryPrompt, /<promise>STOP<\/promise>/);
+		assert.notEqual(recoveryPrompt, "continue");
+		assert.equal(h.readState()?.running, true);
+	} finally {
+		mock.timers.reset();
+	}
+});
+
+test("WAIT timeout prompt is cancelled if NEXT lands before idle returns", async () => {
+	mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+	try {
+		const h = createHarness();
+		h.writeState(
+			makeBaseState({ iteration: 1, max_iterations: 3, transitioning: false }),
+		);
+		await continueLoop(h.pi, h.ctx);
+		h.sentMessages.length = 0;
+		h.setIdle(false);
+
+		h.simulateAgentEnd({ text: "Waiting for reviewer.\n<promise>WAIT</promise>" });
+		mock.timers.tick(WAIT_PARK_TIMEOUT_MS);
+		assert.deepEqual(h.sentMessages, []);
+
+		h.simulateAgentEnd({ text: "Reviewer arrived.\n<promise>NEXT</promise>" });
+		h.setIdle(true);
+		mock.timers.tick(250);
+
+		assert.equal(
+			h.sentMessages.join("\n").includes("WAIT timed out"),
+			false,
+			"stale WAIT timeout prompt must not send after NEXT resolves the wait",
+		);
+		assert.equal(h.readState()?.iteration, 2);
+		assert.equal(h.readState()?.transitioning, true);
+	} finally {
+		mock.timers.reset();
+	}
+});
+
+test("WAIT countdown is cancelled when async result lands before timeout", async () => {
+	mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+	try {
+		const h = createHarness();
+		h.writeState(
+			makeBaseState({ iteration: 1, max_iterations: 3, transitioning: false }),
+		);
+		await continueLoop(h.pi, h.ctx);
+		h.sentMessages.length = 0;
+
+		h.simulateAgentEnd({ text: "Waiting for reviewer.\n<promise>WAIT</promise>" });
+		mock.timers.tick(Math.floor(WAIT_PARK_TIMEOUT_MS / 2));
+
+		handleLoopTurnEnd(h.pi, h.ctx, {
+			message: {
+				role: "assistant",
+				content: [{ type: "text", text: "Reviewer arrived.\n<promise>NEXT</promise>" }],
+			},
+		});
+		h.simulateAgentEnd({ text: "Reviewer arrived.\n<promise>NEXT</promise>" });
+		mock.timers.tick(WAIT_PARK_TIMEOUT_MS);
+
+		assert.equal(
+			h.sentMessages.join("\n").includes("WAIT timed out"),
+			false,
+			"WAIT timeout prompt must not send after async result resolves the wait",
+		);
+		assert.equal(h.readState()?.iteration, 2);
+		assert.equal(h.readState()?.transitioning, true);
+	} finally {
+		mock.timers.reset();
+	}
+});
+
+test("agent_end missing control promise queues a structured control-tag nudge", async () => {
 	const h = createHarness();
 	h.writeState(makeBaseState({ transitioning: false }));
 
 	h.simulateAgentEnd({ text: "Done but forgot the tag" });
 
 	await new Promise((resolve) => setTimeout(resolve, 50));
-	assert.equal(h.sentMessages.at(-1), "continue");
+	const prompt = h.sentMessages.at(-1) ?? "";
+	assert.match(prompt, /without a control tag/);
+	assert.match(prompt, /<promise>WAIT<\/promise>/);
+	assert.match(prompt, /<promise>NEXT<\/promise>/);
+	assert.match(prompt, /<promise>COMPLETE<\/promise>/);
+	assert.doesNotMatch(prompt, /<promise>STOP<\/promise>/);
+	assert.notEqual(prompt, "continue");
 	assert.equal(h.sentMessageOptions.at(-1), undefined);
 	assert.equal(h.widgets.at(-1)?.key, "ralph-loop-notice");
 	assert.equal(h.widgets.at(-1)?.placement, "aboveEditor");
@@ -1329,9 +1458,10 @@ test("missing-promise chain sends five actual nudges before failing", async () =
 		h.simulateAgentEnd({ text: `Missing promise ${i}` });
 	}
 	assert.equal(h.readState()?.running, true);
-	assert.equal(
-		h.sentMessages.filter((message) => message.startsWith("continue")).length,
-		5,
+	assert.equal(h.sentMessages.length, 5);
+	assert.ok(
+		h.sentMessages.every((message) => !message.startsWith("continue")),
+		"missing-promise nudges must be structured prompts, not bare continue",
 	);
 
 	h.simulateAgentEnd({ text: "Missing promise 6" });
@@ -1350,7 +1480,8 @@ test("provider error resets the missing-promise nudge chain", async () => {
 		h.simulateAgentEnd({ text: `Missing promise ${i + 1}` });
 	}
 	assert.equal(h.readState()?.running, true);
-	assert.equal(h.sentMessages.filter((message) => message === "continue").length, 4);
+	assert.equal(h.sentMessages.length, 4);
+	assert.ok(h.sentMessages.every((message) => !message.startsWith("continue")));
 
 	h.simulateAgentEnd({ stopReason: "error", text: "provider failed" });
 	assert.equal(h.readState()?.running, true);
@@ -1361,7 +1492,7 @@ test("provider error resets the missing-promise nudge chain", async () => {
 	await new Promise((resolve) => setTimeout(resolve, 50));
 	assert.equal(h.readState()?.running, true);
 	assert.equal(h.readState()?.stop_reason, null);
-	assert.equal(h.sentMessages.at(-1), "continue");
+	assert.match(h.sentMessages.at(-1) ?? "", /without a control tag/);
 });
 
 test("agent_end with NEXT shows notice, advances iteration, and requests new session", async () => {

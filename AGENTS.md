@@ -1,0 +1,1 @@
+Read `README.md`, `skills/ralph-plan-writer/SKILL.md`, and all the files in `skills/ralph-plan-writer/philosophy/` + explore the codebase (without using subagents) if necessary for fully understanding what ralph wiggum loop is and therefore what this Pi extension does.

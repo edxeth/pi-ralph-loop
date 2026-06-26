@@ -297,7 +297,7 @@ export function registerCommands(pi: ExtensionAPI): void {
 
 	pi.registerCommand("ralph-resume", {
 		description:
-			"Resume a saved Ralph loop from .ralph/loop.md. Completed loops require --force. From the session that owns the saved iteration, it resumes in place without re-sending the prompt (acting on an already-emitted promise or nudging continue); from any other session, it restarts the saved iteration in a fresh session.",
+			"Resume a saved Ralph loop from .ralph/loop.md. Completed loops require --force. From the session that owns the saved iteration, it resumes in place without re-sending the prompt (acting on an already-emitted promise or sending a control-tag nudge); from any other session, it restarts the saved iteration in a fresh session.",
 		handler: handleResumeCommand.bind(null, pi),
 	});
 

@@ -249,6 +249,7 @@ Instruct the runtime agent to:
 - set `passes` to `true` after using a substitute only when the substitute fully satisfies the item's stated `steps`; if the item genuinely requires the unavailable external dependency, keep `passes` as `false`
 - if no safe substitute exists, record the hard blocker in `.ralph/progress.md`, keep that item's `passes` value `false`, add a concise `regression_notes` blocker if useful, and choose a different unfinished item that can proceed without human input
 - if no remaining unfinished item can proceed without human input, do not fabricate a pass; append each known hard blocker to `.ralph/progress.md` once, leave all `passes` values unchanged, and end without emitting `NEXT` or `COMPLETE`
+- when an async helper, background command, review, process alert, or future tool result must arrive before you can decide, end with `<promise>WAIT</promise>` instead of a progress update; do not poll or spend turns restating that you are waiting
 - run every required verification gate
 - update `.ralph/items.json` by changing `passes` and `regression_notes` only
 - append one `.ralph/progress.md` entry with the item, decision rationale, changed files, verification results, and next-iteration notes
@@ -260,6 +261,7 @@ Instruct the runtime agent to:
 
 Promise rules:
 
+- Emit `<promise>WAIT</promise>` only when the current iteration is blocked on an async helper, background command, review, process alert, or future tool result that is expected to arrive later. WAIT does not mark an item passing and does not start a fresh iteration.
 - Emit `<promise>NEXT</promise>` only after one item passes, all required checks pass, progress was appended, listed source docs stayed clean when `source_docs` is non-empty, and the commit requirement was satisfied.
 - Emit `<promise>COMPLETE</promise>` only after every item passes and all required checks pass. If COMPLETE only verifies an already-finished bundle, it does not need to append progress.
 
@@ -270,6 +272,7 @@ Terminal boundary rules:
 - Finalizing the same iteration means only: run required verification gates, update `.ralph/items.json`, append `.ralph/progress.md`, satisfy `runtime_contract.require_commit`, verify the commit state when commits are required, and emit the required promise tag.
 - While finalizing the same iteration, do not choose another item, plan another item, inspect files for another item, edit source files for another item, update any secondary task tracker for another item, or explain what comes next.
 - The final response for a successful one-item iteration must be exactly one promise tag on the last non-empty line.
+- The final response for an async wait must be exactly `<promise>WAIT</promise>` on the last non-empty line.
 - Use plain execution prose in progress entries. Avoid marketing copy, rhetorical setups, formulaic contrasts, and vague project claims.
 
 Boundary example:
@@ -289,7 +292,7 @@ The extension rejects COMPLETE if any item has `passes:false`, immutable item fi
 
 The extension does NOT run `verification_gates` at promise emission. They are instructions surfaced to the runtime agent, which must run them during its iteration before emitting a promise. Re-running gates in the harness froze the loop on heavy suites and duplicated the agent's own run, so gate execution is the agent's responsibility, not an enforced runtime check.
 
-Rejected promises continue in the same session with a corrective prompt. Accepted NEXT starts the next fresh session. The current runtime agent must not start the next item itself. Accepted COMPLETE ends the loop.
+Rejected promises continue in the same session with a corrective prompt. Accepted WAIT parks the same iteration until another result arrives or the wait timeout asks the agent to re-check. Accepted NEXT starts the next fresh session. The current runtime agent must not start the next item itself. Accepted COMPLETE ends the loop.
 
 ## Final response
 
