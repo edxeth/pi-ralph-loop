@@ -337,6 +337,49 @@ function writeNoisyGateBundle(workdir: string): void {
 	);
 }
 
+function writeDelimiterSnapshotBundle(workdir: string): string {
+	const ralphDir = join(workdir, ".ralph");
+	mkdirSync(ralphDir, { recursive: true });
+	const prompt = "Drive delimiter snapshot bundle one item per iteration.";
+
+	writeFileSync(join(ralphDir, "plan.md"), "# Delimiter snapshot plan\n");
+	writeFileSync(join(ralphDir, "prompt.md"), prompt);
+	writeFileSync(join(ralphDir, "progress.md"), "# progress\n");
+	writeFileSync(
+		join(ralphDir, "items.json"),
+		`${JSON.stringify(
+			{
+				version: 1,
+				runtime_contract: {
+					require_progress_append: true,
+					require_one_item_per_iteration: true,
+					require_commit: false,
+				},
+				items: [
+					{
+						category: "functional",
+						description: "Review text before delimiter\n---\nreview text after delimiter.",
+						steps: ["Mark only this item passing during iteration 1."],
+						passes: false,
+						regression_notes: "",
+					},
+					{
+						category: "functional",
+						description: "Complete the follow-up item.",
+						steps: ["Mark only this item passing during iteration 2."],
+						passes: false,
+						regression_notes: "",
+					},
+				],
+			},
+			null,
+			2,
+		)}\n`,
+	);
+
+	return prompt;
+}
+
 test("live pi RPC: NEXT advances and COMPLETE stops", {
 	skip: !SHOULD_RUN,
 }, async () => {
@@ -536,6 +579,45 @@ test("live pi RPC: rejected bundle NEXT stays in the same session", {
 			h.listSessions().length,
 			sessionsBefore + 1,
 			"rejected NEXT must not open a fresh iteration session",
+		);
+	} finally {
+		await h.stop();
+	}
+});
+
+test("live pi RPC: bundle snapshot delimiter content does not corrupt the next prompt", {
+	skip: !SHOULD_RUN,
+}, async () => {
+	const fakeProvider = resolve(
+		process.cwd(),
+		"tests",
+		"fixtures",
+		"fake-driver-provider.ts",
+	);
+	const h = createRpcHarness({
+		extraExtensions: [fakeProvider],
+		model: "ralph-fake/driver",
+		env: { RALPH_FAKE_API_KEY: "unused-but-present" },
+	});
+	try {
+		const prompt = writeDelimiterSnapshotBundle(h.workdir);
+		h.sendPrompt('/ralph-loop "@.ralph/prompt.md" --max-iterations=2');
+
+		const state = await h.waitForFinalState(/stop_reason:\s*"complete"/, 150_000);
+		assert.match(state, /iteration:\s*2/);
+
+		const userMessages = h.listSessions().flatMap((session) => h.userTexts(session));
+		const corruptedMessages = userMessages.filter(
+			(message) =>
+				message.includes("bundle_items_snapshot") ||
+				message.includes("git_head:") ||
+				message.includes("review text after delimiter"),
+		);
+		assert.deepEqual(corruptedMessages, []);
+		assert.equal(
+			userMessages.filter((message) => message === prompt).length,
+			2,
+			"each Ralph iteration must receive the clean bundle prompt body exactly",
 		);
 	} finally {
 		await h.stop();

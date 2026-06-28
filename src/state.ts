@@ -75,30 +75,58 @@ const _stateSchemaIsComplete: _MissingFields extends never ? true : false =
 void _stateSchemaIsComplete;
 
 /**
- * Serialize a frontmatter value to its YAML representation.
+ * Serialize a frontmatter value to its YAML-compatible scalar representation.
  */
 function serializeValue(value: unknown): string {
 	if (value === null || value === undefined) return "null";
 	if (typeof value === "boolean") return value ? "true" : "false";
 	if (typeof value === "number") return String(value);
-	return `"${String(value)}"`;
+	return JSON.stringify(String(value));
+}
+
+/**
+ * Split a state file into frontmatter and body. The closing delimiter must be a
+ * complete line, not a substring inside a serialized value.
+ */
+function frontmatterParts(
+	content: string,
+): { frontmatter: string; body: string } | null {
+	const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/);
+	if (!match) return null;
+	return {
+		frontmatter: match[1],
+		body: content.slice(match[0].length).trim(),
+	};
 }
 
 /**
  * Parse a YAML frontmatter value string into a typed value.
  */
-function parseValue(raw: string): string | number | boolean | null {
+function parseValue(
+	raw: string,
+	key?: string,
+): string | number | boolean | null {
 	const trimmed = raw.trim();
 	if (trimmed === "null") return null;
 	if (trimmed === "true") return true;
 	if (trimmed === "false") return false;
 	if (/^-?\d+$/.test(trimmed)) return parseInt(trimmed, 10);
 	if (/^-?\d+\.\d+$/.test(trimmed)) return parseFloat(trimmed);
-	// Strip surrounding quotes
-	if (
-		(trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-		(trimmed.startsWith("'") && trimmed.endsWith("'"))
-	) {
+	if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+		const unquoted = trimmed.slice(1, -1);
+		// Legacy state files used raw quoted strings. A Windows path such as
+		// "C:\new\table" is valid JSON, but JSON.parse would turn \n and \t
+		// into control characters. New writes escape those backslashes as \\.
+		if (key === "last_session_file" && /^[A-Za-z]:\\(?!\\)/.test(unquoted)) {
+			return unquoted;
+		}
+		try {
+			return JSON.parse(trimmed) as string;
+		} catch {
+			return unquoted;
+		}
+	}
+	if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
 		return trimmed.slice(1, -1);
 	}
 	return trimmed;
@@ -116,10 +144,10 @@ export function readState(cwd: string): RalphLoopState | null {
 
 	try {
 		const content = readFileSync(filePath, "utf-8");
-		const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
-		if (!frontmatterMatch) return null;
+		const parts = frontmatterParts(content);
+		if (!parts) return null;
 
-		const frontmatter = frontmatterMatch[1];
+		const frontmatter = parts.frontmatter;
 		const data: Record<string, unknown> = {};
 
 		for (const line of frontmatter.split("\n")) {
@@ -127,7 +155,7 @@ export function readState(cwd: string): RalphLoopState | null {
 			if (colonIndex === -1) continue;
 			const key = line.slice(0, colonIndex).trim();
 			const value = line.slice(colonIndex + 1).trim();
-			data[key] = parseValue(value);
+			data[key] = parseValue(value, key);
 		}
 
 		const state: Record<string, unknown> = {};
@@ -198,10 +226,10 @@ export function getTaskBody(cwd: string): string | null {
 
 	try {
 		const content = readFileSync(filePath, "utf-8");
-		const endOfFrontmatter = content.indexOf("---", 3);
-		if (endOfFrontmatter === -1) return null;
+		const parts = frontmatterParts(content);
+		if (!parts) return null;
 
-		return content.slice(endOfFrontmatter + 3).trim();
+		return parts.body;
 	} catch {
 		return null;
 	}

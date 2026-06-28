@@ -70,6 +70,66 @@ test("state round-trips and preserves task body", () => {
 	assert.equal(getTaskBody(cwd), task);
 });
 
+test("state body parsing ignores frontmatter string contents", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "ralph-state-frontmatter-"));
+	const state = makeState();
+	state.bundle_items_snapshot = JSON.stringify([
+		{ description: "finding text\n---\ninside serialized snapshot" },
+	]);
+	const task = "real bundle prompt";
+
+	writeState(cwd, state, task);
+
+	assert.deepEqual(readState(cwd), state);
+	assert.equal(getTaskBody(cwd), task);
+
+	updateState(cwd, { iteration: 4 });
+	assert.equal(getTaskBody(cwd), task);
+});
+
+test("state body preserves delimiter lines in the task prompt", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "ralph-state-body-delimiter-"));
+	const state = makeState();
+	const task = "---\nbody starts with a delimiter\n---\nbody contains one too";
+
+	writeState(cwd, state, task);
+
+	assert.equal(getTaskBody(cwd), task);
+	updateState(cwd, { iteration: 4 });
+	assert.equal(getTaskBody(cwd), task);
+});
+
+test("legacy raw Windows session paths parse without JSON escape rewriting", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "ralph-state-windows-path-"));
+	const legacySessionFile = String.raw`C:\new\table\session.jsonl`;
+	mkdirSync(join(cwd, ".ralph"), { recursive: true });
+	writeFileSync(
+		join(cwd, ".ralph", "loop.md"),
+		[
+			"---",
+			"running: true",
+			"iteration: 1",
+			"max_iterations: 3",
+			'started_at: "2026-04-08T00:00:00.000Z"',
+			"completed_at: null",
+			"stop_reason: null",
+			'session_id: "session-1"',
+			`last_session_file: "${legacySessionFile}"`,
+			"error_count: 0",
+			"transitioning: false",
+			"cancel_requested: false",
+			"stop_requested: false",
+			"---",
+			"",
+			"legacy task",
+			"",
+		].join("\n"),
+		"utf8",
+	);
+
+	assert.equal(readState(cwd)?.last_session_file, legacySessionFile);
+});
+
 test("old state files parse with default bundle metadata", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "ralph-state-old-"));
 	mkdirSync(join(cwd, ".ralph"), { recursive: true });
