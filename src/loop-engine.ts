@@ -412,7 +412,9 @@ function handleRequestedStop(
 ): void {
 	const stopReason = state.cancel_requested ? "user_cancelled" : "manual_stop";
 	if (stopReason === "manual_stop") {
-		showLoopNotice(ctx, "Ralph loop stopped manually", "info");
+		showLoopNotice(ctx, "Ralph loop stopped manually", "info", {
+			autoClear: true,
+		});
 	}
 	finalizeLoop(ctx, ctx.cwd, stopReason, state.error_count);
 }
@@ -466,6 +468,7 @@ function handleCompletePromise(
 		ctx,
 		`Ralph loop complete after ${state.iteration} iterations!`,
 		"info",
+		{ autoClear: true },
 	);
 	finalizeLoop(ctx, ctx.cwd, "complete", state.error_count);
 }

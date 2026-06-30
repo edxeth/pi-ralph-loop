@@ -395,6 +395,50 @@ test("live pi RPC: NEXT advances and COMPLETE stops", {
 	}
 });
 
+// Plain mode (free-text prompt, no @bundle): bundle_mode must stay false across
+// the whole lifecycle. bundle_mode:false is the exact persisted input that makes
+// buildStatusView render the "iteration N/M" headline with a null suffix, vs
+// bundle mode's "checkmark P/T items" headline. A plain NEXT also advances in
+// the same session instead of opening a fresh one (fresh session is bundle-only).
+test("live pi RPC: plain loop stays bundle_mode:false and advances in-session", {
+	skip: !SHOULD_RUN,
+}, async () => {
+	const h = createScriptedHarness();
+	try {
+		const sessionsBefore = h.listSessions().length;
+		h.sendPrompt(
+			'/ralph-loop "Read .ralph/loop.md to get the current iteration number from frontmatter. If iteration is less than 3, reply with exactly two lines: Iteration <n> and <promise>NEXT</promise>. Otherwise reply with exactly two lines: Iteration <n> and <promise>COMPLETE</promise>. Do not use code fences." --max-iterations=4',
+		);
+		const started = await h.waitForState(
+			/running:\s*true[\s\S]*iteration:\s*1[\s\S]*transitioning:\s*false/,
+		);
+		assert.match(started, /bundle_mode:\s*false/);
+		const firstSession = h.stateField(started, "last_session_file");
+
+		const advanced = await h.waitForState(
+			/running:\s*true[\s\S]*iteration:\s*2[\s\S]*transitioning:\s*false/,
+			120_000,
+		);
+		assert.match(advanced, /bundle_mode:\s*false/);
+		assert.equal(
+			h.stateField(advanced, "last_session_file"),
+			firstSession,
+			"plain NEXT must advance in the same session (fresh session is bundle-only)",
+		);
+
+		const state = await h.waitForFinalState(/stop_reason:\s*"complete"/);
+		assert.match(state, /iteration:\s*3/);
+		assert.match(state, /bundle_mode:\s*false/);
+		assert.equal(
+			h.listSessions().length,
+			sessionsBefore + 1,
+			"plain mode must run the whole loop in one session",
+		);
+	} finally {
+		await h.stop();
+	}
+});
+
 test("live pi RPC: NEXT on last iteration stops at max_iterations", {
 	skip: !SHOULD_RUN,
 }, async () => {
