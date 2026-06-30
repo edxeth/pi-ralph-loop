@@ -77,6 +77,15 @@ type Harness = {
 	simulateAgentEnd: (response: ScriptedResponse) => void;
 };
 
+/**
+ * Last widget call for the notice widget specifically. The live status widget
+ * ("ralph-loop-status") is mounted alongside the notice widget, so .at(-1) is
+ * no longer reliably the notice; filter by key to assert notice behavior.
+ */
+function lastNoticeWidget(h: Harness) {
+	return h.widgets.filter((w) => w.key === "ralph-loop-notice").at(-1);
+}
+
 function makeBaseState(
 	overrides: Partial<RalphLoopState> = {},
 ): RalphLoopState {
@@ -405,10 +414,10 @@ test("runLoop uses the current session when it has no turns", async () => {
 	assert.equal(state?.max_iterations, 3);
 	assert.equal(state?.transitioning, false);
 	assert.equal(h.sentMessages.at(-1), "task");
-	assert.equal(h.widgets.length, 1);
-	assert.equal(h.widgets.at(-1)?.key, "ralph-loop-notice");
-	assert.equal(h.widgets.at(-1)?.placement, "aboveEditor");
-	assert.equal(typeof h.widgets.at(-1)?.content, "function");
+	const notice = lastNoticeWidget(h);
+	assert.equal(notice?.key, "ralph-loop-notice");
+	assert.equal(notice?.placement, "aboveEditor");
+	assert.equal(typeof notice?.content, "function");
 });
 
 test("runLoop snapshots the active model and thinking level", async () => {
@@ -895,14 +904,14 @@ test("resume clears stale cancellation notice after aborted turn", async () => {
 	h.simulateAgentEnd({ stopReason: "aborted", text: "Interrupted" });
 	assert.equal(h.readState()?.running, false);
 	assert.equal(h.readState()?.stop_reason, "user_cancelled");
-	assert.equal(h.widgets.at(-1)?.key, "ralph-loop-notice");
-	assert.equal(typeof h.widgets.at(-1)?.content, "function");
+	assert.equal(lastNoticeWidget(h)?.key, "ralph-loop-notice");
+	assert.equal(typeof lastNoticeWidget(h)?.content, "function");
 
 	await resumeCurrentSession(h.pi, h.ctx);
 
-	assert.equal(h.widgets.at(-1)?.key, "ralph-loop-notice");
+	assert.equal(lastNoticeWidget(h)?.key, "ralph-loop-notice");
 	assert.equal(
-		h.widgets.at(-1)?.content,
+		lastNoticeWidget(h)?.content,
 		undefined,
 		"same-session resume must clear stale cancellation banner",
 	);

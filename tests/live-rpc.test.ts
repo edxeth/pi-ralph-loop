@@ -395,6 +395,33 @@ test("live pi RPC: NEXT advances and COMPLETE stops", {
 	}
 });
 
+// Plain mode (free-text prompt, no @bundle): bundle_mode must stay false across
+// the whole lifecycle. bundle_mode:false is the exact persisted input that makes
+// buildStatusView render the "iteration N/M" headline with a null suffix, vs
+// bundle mode's "checkmark P/T items" headline. Plain loops still use Ralph's
+// normal fresh-session handoff after accepted NEXT promises.
+test("live pi RPC: plain loop keeps bundle_mode:false through fresh sessions", {
+	skip: !SHOULD_RUN,
+}, async () => {
+	const h = createScriptedHarness();
+	try {
+		const sessionsBefore = h.listSessions().length;
+		h.sendPrompt(
+			'/ralph-loop "Read .ralph/loop.md to get the current iteration number from frontmatter. If iteration is less than 3, reply with exactly two lines: Iteration <n> and <promise>NEXT</promise>. Otherwise reply with exactly two lines: Iteration <n> and <promise>COMPLETE</promise>. Do not use code fences." --max-iterations=4',
+		);
+
+		const state = await h.waitForFinalState(/stop_reason:\s*"complete"/);
+		assert.match(state, /iteration:\s*3/);
+		assert.match(state, /bundle_mode:\s*false/);
+		assert.ok(
+			h.listSessions().length >= sessionsBefore + 3,
+			"plain NEXT must keep Ralph's fresh-session handoff",
+		);
+	} finally {
+		await h.stop();
+	}
+});
+
 test("live pi RPC: NEXT on last iteration stops at max_iterations", {
 	skip: !SHOULD_RUN,
 }, async () => {
